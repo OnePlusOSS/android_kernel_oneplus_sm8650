@@ -45,7 +45,186 @@ void ZSTD_fillDoubleHashTable(ZSTD_matchState_t* ms,
                 break;
     }   }
 }
+#ifdef DSLAB_OPTIMIZE_COMPRESS
+FORCE_INLINE_TEMPLATE
+size_t DSLAB_compressBlock_doubleFast_generic_nodict(
+        ZSTD_matchState_t* ms, seqStore_t* seqStore, U32 rep[ZSTD_REP_NUM],
+        void const* src, size_t srcSize,
+        U32 const mls /* template */)
+{
+    ZSTD_compressionParameters const* cParams = &ms->cParams;
+    U32* const hashLong = ms->hashTable;
+    const U32 hBitsL = cParams->hashLog;
+    U32* const hashSmall = ms->chainTable;
+    // 这个函数里面的hashLong和hashSmall
+    const U32 hBitsS = cParams->chainLog;
+    const BYTE* const base = ms->window.base;
+    const BYTE* const istart = (const BYTE*)src;
+    const BYTE* ip = istart;
+    const BYTE* anchor = istart;
+    const U32 endIndex = (U32)((size_t)(istart - base) + srcSize);
+    /* presumes that, if there is a dictionary, it must be using Attach mode */
+    const U32 prefixLowestIndex = ZSTD_getLowestPrefixIndex(ms, endIndex, cParams->windowLog);
+    const BYTE* const prefixLowest = base + prefixLowestIndex;
+    const BYTE* const iend = istart + srcSize;
+    const BYTE* const ilimit = iend - HASH_READ_SIZE;
+    U32 offset_1=rep[0], offset_2=rep[1];
+    U32 offsetSaved = 0;
+    BYTE loop_mode = 0;
+    const U32 dictAndPrefixLength = (U32)(ip - prefixLowest);
 
+
+    DEBUGLOG(5, "ZSTD_compressBlock_doubleFast_generic");
+
+    /* init */
+    ip += (dictAndPrefixLength == 0);
+    {
+        U32 const curr = (U32)(ip - base);
+        U32 const windowLow = ZSTD_getLowestPrefixIndex(ms, curr, cParams->windowLog);
+        U32 const maxRep = curr - windowLow;
+        if (offset_2 > maxRep) offsetSaved = offset_2, offset_2 = 0;
+        if (offset_1 > maxRep) offsetSaved = offset_1, offset_1 = 0;
+    }
+
+    /* Main Search Loop */
+    while (ip < ilimit) {   /* < instead of <=, because repcode check at (ip+1) */
+        size_t soffset;
+        U32 offset;
+        const BYTE* match;
+
+        size_t const hL = ZSTD_hashPtr(ip, hBitsL, 8);
+        size_t const hS = ZSTD_hashPtr(ip, hBitsS, mls);
+        U32 const curr = (U32)(ip-base);
+        U32 hLong_val = curr;
+        // 预读取指令
+        #if defined(__aarch64__)
+                PREFETCH_L1(ip+256);
+        #endif
+        // 这是原版后面一大坨函数修改而来的，通过增加一个loop_mode变量将其优化成一堆较小的代码
+        if (loop_mode == 1) { /* 49.68% true */
+            if (offset_2 > 0){
+                match = ip - offset_2;
+                if (MEM_read32(ip) == MEM_read32(match)){
+                    U32 const tmpOff = offset_2;
+                    offset_2 = offset_1;
+                    offset_1 = tmpOff;
+                    offset = 0;
+                    soffset = 4;
+                    goto _match_stored;
+                }
+            }
+            loop_mode = 0;
+        }
+        //分支预测优化
+        if (offset_1 > 0){
+            match = ip + 1 - offset_1;
+            if (MEM_read32(match) == MEM_read32(ip+1)) {
+                ip++;
+                offset = 0;
+                soffset = 4;
+                goto _match_stored;
+            }
+        }
+
+        {
+            // 这是两个很大的表，在原版当中多次查表会导致频繁cache miss，浪费很多时间，但有些时候是不需要查表的，所以我们把不需要的分支放上面，然后在结尾放一个goto语句，这样子就节约了时间。
+            U32 const matchIndexL = hashLong[hL];
+            U32 const matchIndexS = hashSmall[hS];
+            if (matchIndexL > prefixLowestIndex) {
+                match = base + matchIndexL;
+                if (MEM_read64(match) == MEM_read64(ip)) {
+                    soffset = 8;
+                    goto _match_found;
+                }
+            }
+
+            match = base + matchIndexS;
+            if (matchIndexS <= prefixLowestIndex || MEM_read32(match) != MEM_read32(ip)){
+                hashLong[hL] = hashSmall[hS] = curr;
+                ip += ((ip-anchor) >> kSearchStrength) + 1;
+                continue;
+            }
+        }
+
+        {
+            size_t const hl3 = ZSTD_hashPtr(ip+1, hBitsL, 8);
+            U32 const matchIndexL3 = hl3 == hL ? curr : hashLong[hl3];
+            if (hl3 == hL){
+                hLong_val = curr + 1;
+            } else {
+                hashLong[hl3] = curr + 1;
+            }
+
+            /* check prefix long +1 match */
+            if (matchIndexL3 > prefixLowestIndex) {
+                if (MEM_read64(base + matchIndexL3) == MEM_read64(ip+1)) {
+                    match = base + matchIndexL3;
+                    ip++;
+                    soffset = 8;
+                }
+            }
+            soffset = 4;
+        }
+
+_match_found:
+        {
+            while (((ip>anchor) & (match>prefixLowest)) && (ip[-1] == match[-1])) { ip--; match--; soffset++; }
+            offset_2 = offset_1;
+            offset_1 = (U32)(ip-match);
+            offset = offset_1 + ZSTD_REP_MOVE;
+        }
+
+_match_stored:
+        {
+            const size_t mLength = ZSTD_count(ip+soffset, match+soffset, iend)+soffset;
+            ZSTD_storeSeq(seqStore, (size_t)(ip-anchor), anchor, iend, offset, mLength-MINMATCH);
+
+            hashSmall[hS] = curr;
+            hashLong[hL] = hLong_val;
+            /* match found */
+            ip += mLength;
+            anchor = ip;
+        }
+
+        if (loop_mode == 0 && ip <= ilimit) {
+            /* Complementary insertion */
+            /* done after iLimit test, as candidates could be > iend-8 */
+            U32 const indexToInsert = curr+2;
+            loop_mode = 1;
+            hashLong[ZSTD_hashPtr(base+indexToInsert, hBitsL, 8)] = indexToInsert;
+            hashLong[ZSTD_hashPtr(ip-2, hBitsL, 8)] = (U32)(ip-2-base);
+            hashSmall[ZSTD_hashPtr(base+indexToInsert, hBitsS, mls)] = indexToInsert;
+            hashSmall[ZSTD_hashPtr(ip-1, hBitsS, mls)] = (U32)(ip-1-base);
+        }
+
+    }   /* while (ip < ilimit) */
+    //这一堆也是源自于原版后面部分的代码
+    if (loop_mode == 1 && ip == ilimit && offset_2 > 0){
+        const BYTE* match = ip - offset_2;
+        if (MEM_read32(ip) == MEM_read32(match)){
+            U32 const curr = (U32)(ip-base);
+            size_t const hL = ZSTD_hashPtr(ip, hBitsL, 8);
+            size_t const hS = ZSTD_hashPtr(ip, hBitsS, mls);
+            const size_t mLength = ZSTD_count(ip+4, match+4, iend)+4;
+            U32 const tmpOff = offset_2;
+            offset_2 = offset_1;
+            offset_1 = tmpOff;
+            ZSTD_storeSeq(seqStore, 0, anchor, iend, 0, mLength-MINMATCH);
+            hashSmall[hS] = curr;
+            hashLong[hL] = curr;
+            ip += mLength;
+            anchor = ip;
+        }
+    }
+
+    /* save reps for next block */
+    rep[0] = offset_1 ? offset_1 : offsetSaved;
+    rep[1] = offset_2 ? offset_2 : offsetSaved;
+
+    /* Return the last literals size */
+    return (size_t)(iend - anchor);
+}
+#endif
 
 FORCE_INLINE_TEMPLATE
 size_t ZSTD_compressBlock_doubleFast_generic(
@@ -322,14 +501,26 @@ size_t ZSTD_compressBlock_doubleFast(
     switch(mls)
     {
     default: /* includes case 3 */
-    case 4 :
-        return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 4, ZSTD_noDict);
-    case 5 :
-        return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 5, ZSTD_noDict);
-    case 6 :
-        return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 6, ZSTD_noDict);
-    case 7 :
-        return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 7, ZSTD_noDict);
+    #ifdef DSLAB_OPTIMIZE_COMPRESS
+    // 劫持函数
+        case 4 :
+            return DSLAB_compressBlock_doubleFast_generic_nodict(ms, seqStore, rep, src, srcSize, 4);
+        case 5 :
+            return DSLAB_compressBlock_doubleFast_generic_nodict(ms, seqStore, rep, src, srcSize, 5);
+        case 6 :
+            return DSLAB_compressBlock_doubleFast_generic_nodict(ms, seqStore, rep, src, srcSize, 6);
+        case 7 :
+            return DSLAB_compressBlock_doubleFast_generic_nodict(ms, seqStore, rep, src, srcSize, 7);
+    #else
+        case 4 :
+            return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 4, ZSTD_noDict);
+        case 5 :
+            return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 5, ZSTD_noDict);
+        case 6 :
+            return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 6, ZSTD_noDict);
+        case 7 :
+            return ZSTD_compressBlock_doubleFast_generic(ms, seqStore, rep, src, srcSize, 7, ZSTD_noDict);
+    #endif
     }
 }
 

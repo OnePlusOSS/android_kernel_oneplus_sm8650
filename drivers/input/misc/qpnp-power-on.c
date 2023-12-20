@@ -181,74 +181,8 @@ struct pon_reg {
 	struct list_head list;
 };
 
-struct qpnp_pon_config {
-	u32			pon_type;
-	u32			support_reset;
-	u32			key_code;
-	u32			s1_timer;
-	u32			s2_timer;
-	u32			s2_type;
-	bool			pull_up;
-	int			state_irq;
-	int			bark_irq;
-	u16			s2_cntl_addr;
-	u16			s2_cntl2_addr;
-	bool			old_state;
-	bool			use_bark;
-	bool			config_reset;
-};
-
-struct pon_regulator {
-	struct qpnp_pon		*pon;
-	struct regulator_dev	*rdev;
-	struct regulator_desc	rdesc;
-	u32			addr;
-	u32			bit;
-	bool			enabled;
-};
-
-struct qpnp_pon {
-	struct device		*dev;
-	struct regmap		*regmap;
-	struct input_dev	*pon_input;
-	struct qpnp_pon_config	*pon_cfg;
-	struct pon_regulator	*pon_reg_cfg;
-	struct list_head	restore_regs;
-	struct list_head	list;
-	struct mutex		restore_lock;
-	struct delayed_work	bark_work;
-	struct dentry		*debugfs;
-	u16			base;
-	u16			pbs_base;
-	u8			subtype;
-	u8			pon_ver;
-	u8			warm_reset_reason1;
-	u8			warm_reset_reason2;
-	int			num_pon_config;
-	int			num_pon_reg;
-	int			pon_trigger_reason;
-	int			pon_power_off_reason;
-	u32			dbc_time_us;
-	u32			uvlo;
-	int			warm_reset_poff_type;
-	int			hard_reset_poff_type;
-	int			shutdown_poff_type;
-	int			resin_warm_reset_type;
-	int			resin_hard_reset_type;
-	int			resin_shutdown_type;
-	bool			is_spon;
-	bool			store_hard_reset_reason;
-	bool			resin_hard_reset_disable;
-	bool			resin_shutdown_disable;
-	bool			ps_hold_hard_reset_disable;
-	bool			ps_hold_shutdown_disable;
-	bool			kpdpwr_dbc_enable;
-	bool			resin_pon_reset;
-	ktime_t			kpdpwr_last_release_time;
-	bool			legacy_hard_reset_offset;
-};
-
-static struct qpnp_pon *sys_reset_dev;
+struct qpnp_pon *sys_reset_dev;
+EXPORT_SYMBOL(sys_reset_dev);
 static struct qpnp_pon *modem_reset_dev;
 static DEFINE_SPINLOCK(spon_list_slock);
 static LIST_HEAD(spon_dev_list);

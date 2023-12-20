@@ -1,0 +1,6 @@
+config LEDS_AW2023
+	tristate "LED Support for AW2023"
+	depends on LEDS_CLASS && I2C
+	help
+		this option enables support for the AW2023 RGB LED connected
+		through I2C. Say Y to enable support for the AW2023 LED

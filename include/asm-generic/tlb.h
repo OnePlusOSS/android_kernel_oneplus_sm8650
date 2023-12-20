@@ -570,6 +570,14 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 		__tlb_remove_tlb_entry(tlb, ptep, address);	\
 	} while (0)
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+#define tlb_remove_cont_pte_tlb_entry(tlb, ptep, address)               \
+        do {                                                    \
+		tlb_flush_pte_range(tlb, address, HPAGE_CONT_PTE_SIZE); \
+		__tlb_remove_tlb_entry(tlb, ptep, address);     \
+	} while (0)
+#endif
+
 #define tlb_remove_huge_tlb_entry(h, tlb, ptep, address)	\
 	do {							\
 		unsigned long _sz = huge_page_size(h);		\

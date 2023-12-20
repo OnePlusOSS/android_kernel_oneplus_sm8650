@@ -1538,6 +1538,30 @@ void folio_unlock(struct folio *folio)
 }
 EXPORT_SYMBOL(folio_unlock);
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+void unlock_nr_folios(struct folio **folio, int nr)
+{
+	int i;
+
+	BUILD_BUG_ON(PG_waiters != 7);
+
+	for (i = 0; i < nr; i++) {
+		VM_BUG_ON_FOLIO(!folio_test_locked(folio[i]), folio[i]);
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && defined(CONFIG_CONT_PTE_HUGEPAGE_DEBUG_VERBOSE)
+		if (!PageLocked(page[i])) {
+			pr_err("@@@Fixme: unlocking an unlocked page %s page:%lx flags:%lx pfn:%lx\n",
+					__func__, folio[i], folio[i]->flags, folio_pfn(folio[i]));
+			WARN_ON(1);
+		}
+#endif
+		if (clear_bit_unlock_is_negative_byte(PG_locked, folio_flags(folio[i], 0)))
+			folio_wake_bit(folio[i], PG_locked);
+
+	}
+}
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+
 /**
  * folio_end_private_2 - Clear PG_private_2 and wake any waiters.
  * @folio: The folio.
@@ -3052,6 +3076,9 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	ra->start = max_t(long, 0, vmf->pgoff - ra->ra_pages / 2);
 	ra->size = ra->ra_pages;
 	ra->async_size = ra->ra_pages / 4;
+#ifdef CONFIG_OPLUS_DYNAMIC_READAHEAD
+	adjust_readaround(ra, vmf->pgoff);
+#endif
 	ractl._index = ra->start;
 	page_cache_ra_order(&ractl, ra, 0);
 	return fpin;

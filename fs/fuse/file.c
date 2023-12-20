@@ -2708,6 +2708,7 @@ static int fuse_file_flock(struct file *file, int cmd, struct file_lock *fl)
 		err = locks_lock_file_wait(file, fl);
 	} else {
 
+
 		/* emulate flock with POSIX locks */
 		ff->flock = true;
 		err = fuse_setlk(file, fl, 1);

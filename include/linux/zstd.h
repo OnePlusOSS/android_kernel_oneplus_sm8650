@@ -444,4 +444,7 @@ typedef ZSTD_frameHeader zstd_frame_header;
 size_t zstd_get_frame_header(zstd_frame_header *params, const void *src,
 	size_t src_size);
 
+#define DSLAB_OPTIMIZE_COMPRESS
+#define DSLAB_L1DCACHE_LOG 15 /* 32KB L1d cache */
+
 #endif  /* LINUX_ZSTD_H */

@@ -67,6 +67,9 @@ def define_pineapple():
         "drivers/iio/adc/qti-glink-adc.ko",
         "drivers/input/misc/pm8941-pwrkey.ko",
         "drivers/input/misc/qcom-hv-haptics.ko",
+        "drivers/misc/aw8697_haptic/haptic_feedback.ko",
+        "drivers/input/misc/qpnp-power-on.ko",
+        "drivers/leds/aw20198/leds-aw20198.ko", 
         "drivers/interconnect/icc-test.ko",
         "drivers/interconnect/qcom/icc-bcm-voter.ko",
         "drivers/interconnect/qcom/icc-debug.ko",
@@ -109,7 +112,10 @@ def define_pineapple():
         "drivers/power/reset/qcom-pon.ko",
         "drivers/power/reset/qcom-reboot-reason.ko",
         "drivers/power/reset/reboot-mode.ko",
-        "drivers/power/supply/qti_battery_charger.ko",
+        #"drivers/power/supply/qti_battery_charger.ko",
+        "drivers/power/oplus/v2/oplus_chg_v2.ko",
+        "drivers/power/oplus/test-kit/test-kit.ko",
+        "drivers/power/oplus/v2/ufcs/ufcs_class.ko",
         "drivers/pwm/pwm-qti-lpg.ko",
         "drivers/regulator/debug-regulator.ko",
         "drivers/regulator/proxy-consumer.ko",
@@ -270,6 +276,38 @@ def define_pineapple():
         "net/wireless/cfg80211.ko",
         "sound/soc/codecs/snd-soc-hdmi-codec.ko",
         "sound/usb/snd-usb-audio-qmi.ko",
+        "drivers/soc/oplus/multimedia/oplus_mm_kevent.ko",
+        "drivers/soc/oplus/multimedia/oplus_mm_kevent_fb.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/oplusboot.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/oplus_ftm_mode.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/buildvariant.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/cdt_integrity.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/oplus_charger_present.ko",
+        "drivers/soc/oplus/boot/oplus_projectinfo/oplus_bsp_boot_projectinfo.ko",
+        "drivers/soc/oplus/boot/bootmode/boot_mode.ko",
+        "drivers/soc/oplus/boot/bootloader_log/bootloader_log.ko",
+        "drivers/soc/oplus/boot/htb/tango32.ko",
+        "drivers/soc/oplus/device_info/device_info.ko",
+        "drivers/soc/oplus/dft/common/olc/olc.ko",
+        "drivers/soc/oplus/dft/common/feedback/kernel_fb.ko",
+        "drivers/base/kernelFwUpdate/oplus_bsp_fw_update.ko",
+        "drivers/base/touchpanel_notify/oplus_bsp_tp_notify.ko",
+        "kernel/oplus_cpu/cpufreq_health/oplus_bsp_cpufreq_health.ko",
+        "drivers/soc/oplus/boot/qcom_watchdog/qcom_enhance_watchdog.ko",
+        "kernel/oplus_cpu/sched/sched_assist/oplus_bsp_sched_assist.ko",
+        "kernel/oplus_cpu/sched/frame_boost/oplus_bsp_frame_boost.ko",
+        "kernel/oplus_cpu/sched/task_cpustats/oplus_bsp_task_cpustats.ko",
+        "kernel/oplus_cpu/sched/task_sched/oplus_bsp_task_sched.ko",
+        "kernel/oplus_cpu/sched/sched_info/oplus_bsp_schedinfo.ko",
+        "kernel/oplus_cpu/uad/cpufreq_uag.ko",
+        "kernel/oplus_cpu/uad/ua_cpu_ioctl.ko",
+        "kernel/oplus_cpu/oplus_omrg/oplus_bsp_omrg.ko",
+        "kernel/oplus_cpu/cpufreq_bouncing/cpufreq_bouncing.ko",
+        "kernel/oplus_cpu/oplus_overload/oplus_bsp_task_overload.ko",
+        "drivers/soc/oplus/mdmrst/oplus_mdmrst.ko",
+        "mm/mm_osvelte/oplus_bsp_mm_osvelte.ko",
+        "drivers/soc/oplus/storage/common/storage_log/oplus_storage_log.ko",
+        "drivers/soc/oplus/storage/common/oplus_uprobe/oplus_uprobe.ko",
     ]
 
     _pineapple_consolidate_in_tree_modules = _pineapple_in_tree_modules + [
@@ -303,7 +341,6 @@ def define_pineapple():
             mod_list = _pineapple_in_tree_modules
             board_kernel_cmdline_extras += ["nosoftlockup"]
             kernel_vendor_cmdline_extras += ["nosoftlockup"]
-            board_bootconfig_extras += ["androidboot.console=0"]
 
         define_msm_la(
             msm_target = target_name,

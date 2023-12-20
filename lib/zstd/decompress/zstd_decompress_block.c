@@ -40,7 +40,7 @@
 #error "Cannot force the use of the short and the long ZSTD_decompressSequences variants!"
 #endif
 
-
+#define DSLAB
 /*_*******************************************************
 *  Memory operations
 **********************************************************/
@@ -1096,7 +1096,379 @@ MEM_STATIC void ZSTD_assertValidSequence(
 #endif
 }
 #endif
+#ifdef DSLAB
+MEM_STATIC FORCE_INLINE_ATTR
+void DSLAB_memcopy(uint8_t* op, const uint8_t* ip, const uint64_t length)
+{
+    uint8_t* oend = op + length;
+    do {
+        ZSTD_copy16(op, ip);
+        ZSTD_copy16(op + 16, ip + 16);
+        op += 32;
+        ip += 32;
+    }
+    while (op < oend);
+}
 
+MEM_STATIC FORCE_INLINE_ATTR
+void DSLAB_safecopy(uint8_t* const op, const uint8_t* const ip, const uint64_t length){
+    if (length < 16){
+        uint8_t buff[16];
+        ZSTD_copy16(buff, op - 16);
+        ZSTD_copy16(op + length - 16, ip + length - 16);
+        ZSTD_copy16(op - 16, buff);
+    } else if (length < 32) {
+        ZSTD_copy16(op, ip);
+        ZSTD_copy16(op + length - 16, ip + length - 16);
+    } else {
+        DSLAB_memcopy(op, ip, length - 32);
+        ZSTD_copy16(op + length - 32, ip + length - 32);
+        ZSTD_copy16(op + length - 16, ip + length - 16);
+    }
+}
+
+MEM_STATIC FORCE_INLINE_ATTR
+void DSLAB_wildcopy(uint8_t* const op, const uint8_t* const ip, const uint64_t length)
+{
+    // 这里也是一个重要的优化，因为这里小概率大于48，所以先使用copy16，
+    // 然后在大于48的时候才用memcopy，使用copy16可以提升性能。
+    ZSTD_copy16(op, ip);
+    // vst1q_u8((uint8_t*)op, vld1q_u8((const uint8_t*)ip));
+    if (length > 16){
+        ZSTD_copy16(op + 16, ip + 16);
+        ZSTD_copy16(op + 32, ip + 32);
+        // vst1q_u8((uint8_t*)(op + 16), vld1q_u8((const uint8_t*)( ip + 16)));
+        // vst1q_u8((uint8_t*)(op + 16), vld1q_u8((const uint8_t*)( ip + )));
+        if (length > 48){
+            DSLAB_memcopy(op + 48, ip + 48, length - 48);
+        }
+    }
+}
+
+
+MEM_STATIC
+uint64_t DSLAB_lookBitsFast(const uint32_t bitsConsumed, const uint64_t bitContainer, const uint32_t nbBits)
+{
+    assert(nbBits >= 1);
+    return (bitContainer << (bitsConsumed & 63U)) >> ((64U - nbBits) & 63U);
+}
+
+MEM_STATIC
+uint64_t DSLAB_lookBits(const uint32_t bitsConsumed, const uint64_t bitContainer, const uint32_t nbBits)
+{
+    assert(nbBits < BIT_MASK_SIZE);
+    return (bitContainer >> ((64U - bitsConsumed) & 63U)) & (~((uint64_t)-1 << nbBits));
+}
+
+FORCE_INLINE_TEMPLATE
+uint64_t DSLAB_updateSeq(uint32_t* const bitsConsumed, ZSTD_seqSymbol DInfo, const uint64_t bitContainer)
+{
+    uint64_t value = DInfo.baseValue;
+    uint32_t nbBits = DInfo.nbAdditionalBits;
+    if (nbBits > 0){
+        value += DSLAB_lookBitsFast(*bitsConsumed, bitContainer, nbBits);
+        *bitsConsumed += nbBits;
+    }
+    return value;
+}
+
+FORCE_INLINE_TEMPLATE
+uint64_t DSLAB_updateFseState(uint32_t* const bitsConsumed, ZSTD_seqSymbol DInfo, const uint64_t bitContainer)
+{
+    uint32_t const nbBits = DInfo.nbBits;
+    *bitsConsumed += nbBits;
+    return DSLAB_lookBits(*bitsConsumed, bitContainer, nbBits) + DInfo.nextState;
+}
+
+FORCE_INLINE_TEMPLATE
+void DSLAB_updateOffset(uint64_t* const prevOffset0, uint64_t* const prevOffset1, uint64_t* const prevOffset2, uint32_t* const bitsConsumed, const uint64_t bitContainer, const ZSTD_seqSymbol ofDInfo, const uint32_t llbase)
+{
+    const uint32_t ofBits = ofDInfo.nbAdditionalBits;
+    if (ofBits > 1) {
+        *prevOffset2 = *prevOffset0;
+        *prevOffset0 = DSLAB_lookBitsFast(*bitsConsumed, bitContainer, ofBits) + ofDInfo.baseValue;
+        *bitsConsumed += ofBits;
+    } else if (UNLIKELY(ofBits == 1)) {
+        uint32_t const ll0 = (llbase == 0);
+        uint64_t temp = ofDInfo.baseValue + ll0 + DSLAB_lookBitsFast(*bitsConsumed, bitContainer, 1);
+        *bitsConsumed += 1;
+        if (temp == 0){
+            temp = *prevOffset1;
+            *prevOffset2 = *prevOffset0;
+        } else if (temp == 1) {
+            temp = *prevOffset0;
+        } else if (temp == 2) {
+            temp = *prevOffset2;
+            *prevOffset2 = *prevOffset0;
+        } else {
+            temp = *prevOffset1 - 1;
+            *prevOffset2 = *prevOffset0;
+        }
+        temp += !temp;
+        *prevOffset0 = temp;
+    } else if (llbase) {
+        uint64_t temp = *prevOffset1;
+        *prevOffset1 = *prevOffset0;
+        *prevOffset0 = temp;
+    }
+}
+
+FORCE_INLINE_TEMPLATE
+void DSLAB_reloadDStream(uint32_t* const bitsConsumed, uint64_t* const bitContainer, const uint8_t** DStream_ptr, const uint8_t* const DStream_start){
+    uint32_t nbBytes = *bitsConsumed >> 3;
+    *DStream_ptr -= nbBytes;
+    *bitsConsumed &= 7;
+    if (UNLIKELY(*DStream_ptr < DStream_start)) {
+        uint32_t nbBytes2 = (uint32_t)(DStream_start - *DStream_ptr);
+        *bitsConsumed += nbBytes2 << 3;
+        *DStream_ptr = DStream_start;
+        if (nbBytes == nbBytes2) {
+            return;
+        }
+    }
+    *bitContainer = MEM_readLEST(*DStream_ptr);
+}
+
+HINT_INLINE
+size_t DSLAB_execSequence(
+                     BYTE* op,
+                     BYTE* const oend,
+                     size_t offset,
+                     size_t matchLength,
+                     size_t litLength,
+                     const BYTE** litPtr,
+                     const BYTE* const litLimit,
+                     const BYTE* const prefixStart,
+                     const BYTE* const virtualStart,
+                     const BYTE* const dictEnd)
+{
+    BYTE* const oLitEnd = op + litLength;
+    size_t const sequenceLength = litLength + matchLength;
+    BYTE* const oMatchEnd = op + sequenceLength;
+    BYTE* const oend_w = oend - WILDCOPY_OVERLENGTH;
+    const BYTE* const iLitEnd = *litPtr + litLength;
+    const BYTE* match = oLitEnd - offset;
+
+    if (UNLIKELY(iLitEnd > litLimit || oMatchEnd > oend_w)){
+        seq_t sequence;
+        sequence.offset = offset;
+        sequence.matchLength = matchLength;
+        sequence.litLength = litLength;
+        return ZSTD_execSequenceEnd(op, oend, sequence, litPtr, litLimit, prefixStart, virtualStart, dictEnd);
+    }
+
+    ZSTD_copy16(op, (*litPtr));
+    if (UNLIKELY(litLength > 16)) {
+        ZSTD_wildcopy(op+16, (*litPtr)+16, litLength-16, ZSTD_no_overlap);
+    }
+    op = oLitEnd;
+    *litPtr = iLitEnd;
+
+    if (offset > (size_t)(oLitEnd - prefixStart)) {
+        RETURN_ERROR_IF(UNLIKELY(offset > (size_t)(oLitEnd - virtualStart)), corruption_detected, "");
+        match = dictEnd + (match - prefixStart);
+        if (match + matchLength <= dictEnd - 32) {
+            DSLAB_wildcopy(oLitEnd, match, matchLength);
+            return sequenceLength;
+        }
+        if (match + matchLength <= dictEnd) {
+            ZSTD_memmove(oLitEnd, match, matchLength);
+            return sequenceLength;
+        }
+        {   size_t const length1 = dictEnd - match;
+            ZSTD_memmove(oLitEnd, match, length1);
+            op = oLitEnd + length1;
+            matchLength -= length1;
+            match = prefixStart;
+        }
+    }
+
+    if (LIKELY(offset >= WILDCOPY_VECLEN)) {
+        // ZSTD_wildcopy(op, match, (ptrdiff_t)matchLength, ZSTD_no_overlap);
+        DSLAB_wildcopy(op, match, (ptrdiff_t)matchLength);
+        return sequenceLength;
+    }
+
+    ZSTD_overlapCopy8(&op, &match, offset);
+
+    if (matchLength > 8) {
+        ZSTD_wildcopy(op, match, (ptrdiff_t)matchLength-8, ZSTD_overlap_src_before_dst);
+    }
+    return sequenceLength;
+}
+
+FORCE_INLINE_TEMPLATE seq_t
+DSLAB_decodeSequence_end(seqState_t* seqState, ZSTD_seqSymbol llDInfo, ZSTD_seqSymbol mlDInfo, ZSTD_seqSymbol ofDInfo)
+{
+    seq_t seq;
+    U32 const llBase = llDInfo.baseValue;
+    U32 const mlBase = mlDInfo.baseValue;
+    U32 const ofBase = ofDInfo.baseValue;
+    BYTE const llBits = llDInfo.nbAdditionalBits;
+    BYTE const mlBits = mlDInfo.nbAdditionalBits;
+    BYTE const ofBits = ofDInfo.nbAdditionalBits;
+    BYTE const totalBits = llBits+mlBits+ofBits;
+
+    BIT_reloadDStream(&(seqState->DStream));
+
+    {   size_t offset;
+        if (ofBits > 1) {
+            offset = ofBase + BIT_readBitsFast(&seqState->DStream, ofBits);
+            seqState->prevOffset[2] = seqState->prevOffset[1];
+            seqState->prevOffset[1] = seqState->prevOffset[0];
+            seqState->prevOffset[0] = offset;
+        } else {
+            U32 const ll0 = (llBase == 0);
+            if (LIKELY((ofBits == 0))) {
+                if (LIKELY(!ll0))
+                    offset = seqState->prevOffset[0];
+                else {
+                    offset = seqState->prevOffset[1];
+                    seqState->prevOffset[1] = seqState->prevOffset[0];
+                    seqState->prevOffset[0] = offset;
+                }
+            } else {
+                offset = ofBase + ll0 + BIT_readBitsFast(&seqState->DStream, 1);
+                {   size_t temp = (offset==3) ? seqState->prevOffset[0] - 1 : seqState->prevOffset[offset];
+                    temp += !temp;
+                    if (offset != 1) seqState->prevOffset[2] = seqState->prevOffset[1];
+                    seqState->prevOffset[1] = seqState->prevOffset[0];
+                    seqState->prevOffset[0] = offset = temp;
+        }   }   }
+        seq.offset = offset;
+    }
+
+    seq.matchLength = mlBase;
+    if (mlBits > 0)
+        seq.matchLength += BIT_readBitsFast(&seqState->DStream, mlBits);
+
+    if (UNLIKELY(totalBits >= STREAM_ACCUMULATOR_MIN_64-(LLFSELog+MLFSELog+OffFSELog)))
+        BIT_reloadDStream(&seqState->DStream);
+
+    seq.litLength = llBase;
+    if (llBits > 0)
+        seq.litLength += BIT_readBitsFast(&seqState->DStream, llBits);
+
+    ZSTD_updateFseStateWithDInfo(&seqState->stateLL, &seqState->DStream, llDInfo);
+    ZSTD_updateFseStateWithDInfo(&seqState->stateML, &seqState->DStream, mlDInfo);
+    ZSTD_updateFseStateWithDInfo(&seqState->stateOffb, &seqState->DStream, ofDInfo);
+
+    return seq;
+}
+HINT_INLINE
+int64_t DSLAB_decompressSequences_body(
+                        uint8_t** op,
+                        const uint8_t** litPtr_p,
+                        seqState_t* seqState,
+                        uint32_t nbSeq,
+                        uint8_t* const oend,
+                        ZSTD_DCtx* dctx)
+{
+    //const uint8_t* const oend_w = oend - WILDCOPY_OVERLENGTH;
+    //const uint8_t* const litLimit = dctx->litPtr + dctx->litSize;
+    const uint8_t* const litEnd = dctx->litPtr + dctx->litSize;
+    const uint8_t* const prefixStart = (const uint8_t*) (dctx->prefixStart);
+    const uint8_t* const virtualStart = (const uint8_t*) (dctx->virtualStart);
+    const uint8_t* const dictEnd = (const uint8_t*) (dctx->dictEnd);
+    const uint8_t* const DStream_start = (const uint8_t*)seqState->DStream.start;
+
+    const uint8_t *litPtr, *DStream_ptr;
+    uint8_t *optr;
+    uint64_t bitContainer, matchLength, litLength;
+    uint32_t bitsConsumed;
+    uint64_t prevOffset0, prevOffset1, prevOffset2;
+    uint64_t oneSeqSize, error;
+    ZSTD_seqSymbol llDInfo, mlDInfo, ofDInfo;
+
+    optr = *op;
+    litPtr = *litPtr_p;
+    // 下面的一些参数都是做的数据局部化的优化，因为这些参数在循环中都是不变的，
+    // 且这些参数的值都是从seqState中获取的，而seqState是从外面传入的，
+    // 如果直接使用seqState中的值，会导致缓存失效，大大影响性能。
+    DStream_ptr = (const uint8_t *)seqState->DStream.ptr;
+    bitContainer = seqState->DStream.bitContainer;
+    bitsConsumed = seqState->DStream.bitsConsumed;
+
+    prevOffset0 = seqState->prevOffset[0];
+    prevOffset1 = seqState->prevOffset[1];
+    prevOffset2 = seqState->prevOffset[2];
+
+    llDInfo = seqState->stateLL.table[seqState->stateLL.state];
+    mlDInfo = seqState->stateML.table[seqState->stateML.state];
+    ofDInfo = seqState->stateOffb.table[seqState->stateOffb.state];
+    // 上面这三行是错位读取的优化，因为读取的操作需要消耗一定的时间，如果读取完数据后，
+    // 直接使用，会导致阻塞，所以这里错位读取，预先对数据进行读取。
+    // 在读取的操作中进行一些其他的操作，这样就可以避免阻塞。
+    error = 0;
+    while(nbSeq > 2) {
+        DSLAB_reloadDStream(&bitsConsumed, &bitContainer, &DStream_ptr, DStream_start);
+        DSLAB_updateOffset(&prevOffset1, &prevOffset0, &prevOffset2, &bitsConsumed, bitContainer, ofDInfo, llDInfo.baseValue);
+        matchLength = DSLAB_updateSeq(&bitsConsumed, mlDInfo, bitContainer);
+        if (UNLIKELY(bitsConsumed + llDInfo.nbAdditionalBits >= 64-(LLFSELog+MLFSELog+OffFSELog))){
+            DSLAB_reloadDStream(&bitsConsumed, &bitContainer, &DStream_ptr, DStream_start);
+        }
+        litLength = DSLAB_updateSeq(&bitsConsumed, llDInfo, bitContainer);
+        //预先读取，下一次对这些变量的使用在下一次循环。
+        ZSTD_copy8(&llDInfo, seqState->stateLL.table + DSLAB_updateFseState(&bitsConsumed, llDInfo, bitContainer));
+        ZSTD_copy8(&mlDInfo, seqState->stateML.table + DSLAB_updateFseState(&bitsConsumed, mlDInfo, bitContainer));
+        ZSTD_copy8(&ofDInfo, seqState->stateOffb.table + DSLAB_updateFseState(&bitsConsumed, ofDInfo, bitContainer));
+
+        oneSeqSize = DSLAB_execSequence(optr, oend, prevOffset1, matchLength, litLength, &litPtr, litEnd, prefixStart, virtualStart, dictEnd);
+        optr += oneSeqSize;
+        if (UNLIKELY(ZSTD_isError(oneSeqSize))) {
+            error = oneSeqSize;
+            break;
+        }
+
+        DSLAB_reloadDStream(&bitsConsumed, &bitContainer, &DStream_ptr, DStream_start);
+        DSLAB_updateOffset(&prevOffset0, &prevOffset1, &prevOffset2, &bitsConsumed, bitContainer, ofDInfo, llDInfo.baseValue);
+        matchLength = DSLAB_updateSeq(&bitsConsumed, mlDInfo, bitContainer);
+        if (UNLIKELY(bitsConsumed + llDInfo.nbAdditionalBits >= 64-(LLFSELog+MLFSELog+OffFSELog))){
+            DSLAB_reloadDStream(&bitsConsumed, &bitContainer, &DStream_ptr, DStream_start);
+        }
+        litLength = DSLAB_updateSeq(&bitsConsumed, llDInfo, bitContainer);
+
+        ZSTD_copy8(&llDInfo, seqState->stateLL.table + DSLAB_updateFseState(&bitsConsumed, llDInfo, bitContainer));
+        ZSTD_copy8(&mlDInfo, seqState->stateML.table + DSLAB_updateFseState(&bitsConsumed, mlDInfo, bitContainer));
+        ZSTD_copy8(&ofDInfo, seqState->stateOffb.table + DSLAB_updateFseState(&bitsConsumed, ofDInfo, bitContainer));
+
+        oneSeqSize = DSLAB_execSequence(optr, oend, prevOffset0, matchLength, litLength, &litPtr, litEnd, prefixStart, virtualStart, dictEnd);
+        optr += oneSeqSize;
+        if (UNLIKELY(ZSTD_isError(oneSeqSize))) {
+            error = oneSeqSize;
+            break;
+        }
+
+        nbSeq -= 2;
+    }
+
+    seqState->DStream.ptr = (const char*)DStream_ptr;
+    seqState->DStream.bitContainer = bitContainer;
+    seqState->DStream.bitsConsumed = bitsConsumed;
+
+    seqState->prevOffset[0] = prevOffset0;
+    seqState->prevOffset[1] = prevOffset1;
+    seqState->prevOffset[2] = prevOffset2;
+
+    *op = optr;
+    *litPtr_p = litPtr;
+
+    if (nbSeq) {
+        seq_t const sequence = DSLAB_decodeSequence_end(seqState, llDInfo, mlDInfo, ofDInfo);
+        oneSeqSize = ZSTD_execSequence(*op, oend, sequence, litPtr_p, litEnd, prefixStart, virtualStart, dictEnd);
+        BIT_reloadDStream(&(seqState->DStream));
+        *op += oneSeqSize;
+        nbSeq--;
+        if (UNLIKELY(ZSTD_isError(oneSeqSize))) {
+            error = oneSeqSize;
+        }
+    }
+
+    if (ZSTD_isError(error)) return error;
+
+    return nbSeq;
+}
+#endif
 #ifndef ZSTD_FORCE_DECOMPRESS_SEQUENCES_LONG
 FORCE_INLINE_TEMPLATE size_t
 DONT_VECTORIZE
@@ -1179,31 +1551,62 @@ ZSTD_decompressSequences_body( ZSTD_DCtx* dctx,
         __asm__("nop");
         __asm__(".p2align 4");
 #endif
-        for ( ; ; ) {
-            seq_t const sequence = ZSTD_decodeSequence(&seqState, isLongOffset, ZSTD_p_noPrefetch);
-            size_t const oneSeqSize = ZSTD_execSequence(op, oend, sequence, &litPtr, litEnd, prefixStart, vBase, dictEnd);
-#if defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) && defined(FUZZING_ASSERT_VALID_SEQUENCE)
-            assert(!ZSTD_isError(oneSeqSize));
-            if (frame) ZSTD_assertValidSequence(dctx, op, oend, sequence, prefixStart, vBase);
-#endif
-            DEBUGLOG(6, "regenerated sequence size : %u", (U32)oneSeqSize);
-            BIT_reloadDStream(&(seqState.DStream));
-            op += oneSeqSize;
-            /* gcc and clang both don't like early returns in this loop.
-             * Instead break and check for an error at the end of the loop.
-             */
-            if (UNLIKELY(ZSTD_isError(oneSeqSize))) {
-                error = oneSeqSize;
-                break;
+        {
+
+            RETURN_ERROR_IF(nbSeq < 0, corruption_detected, "");
+
+            for ( ; ; ) {
+                seq_t const sequence = ZSTD_decodeSequence(&seqState, isLongOffset, ZSTD_p_noPrefetch);
+                size_t const oneSeqSize = ZSTD_execSequence(op, oend, sequence, &litPtr, litEnd, prefixStart, vBase, dictEnd);
+                #ifndef DSLAB
+                    #if defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) && defined(FUZZING_ASSERT_VALID_SEQUENCE)
+                            assert(!ZSTD_isError(oneSeqSize));
+                            if (frame) ZSTD_assertValidSequence(dctx, op, oend, sequence, prefixStart, vBase);
+                    #endif
+                    DEBUGLOG(6, "regenerated sequence size : %u", (U32)oneSeqSize);
+                #endif
+                BIT_reloadDStream(&(seqState.DStream));
+                op += oneSeqSize;
+                if (UNLIKELY(ZSTD_isError(oneSeqSize))) {
+                    error = oneSeqSize;
+                    break;
+                }
+                if (UNLIKELY(!--nbSeq)) break;
+                #ifdef DSLAB
+                    if (op >= prefixStart + 16) break;
+                #endif
             }
-            if (UNLIKELY(!--nbSeq)) break;
+        #ifdef DSLAB
+	    if (nbSeq > 0) {
+		    nbSeq = (int32_t)DSLAB_decompressSequences_body(
+			    &op, &litPtr, &seqState, (uint32_t)nbSeq, oend,
+			    dctx);
+		    if (UNLIKELY(ZSTD_isError(nbSeq))) {
+			    return nbSeq;
+		    }
+	    }
+	    while (nbSeq > 0) {
+                seq_t const sequence = ZSTD_decodeSequence(&seqState, isLongOffset, ZSTD_p_noPrefetch);
+                size_t const oneSeqSize = ZSTD_execSequence(op, oend, sequence, &litPtr, litEnd, prefixStart, vBase, dictEnd);
+                BIT_reloadDStream(&(seqState.DStream));
+                op += oneSeqSize;
+                if (UNLIKELY(ZSTD_isError(oneSeqSize))) {
+                    error = oneSeqSize;
+                    break;
+                }
+                if (UNLIKELY(!--nbSeq)) break;
+            }
+        #endif
         }
+
 
         /* check if reached exact end */
         DEBUGLOG(5, "ZSTD_decompressSequences_body: after decode loop, remaining nbSeq : %i", nbSeq);
         if (ZSTD_isError(error)) return error;
         RETURN_ERROR_IF(nbSeq, corruption_detected, "");
+        #ifndef DSLAB
         RETURN_ERROR_IF(BIT_reloadDStream(&seqState.DStream) < BIT_DStream_completed, corruption_detected, "");
+        #endif
         /* save reps for next block */
         { U32 i; for (i=0; i<ZSTD_REP_NUM; i++) dctx->entropy.rep[i] = (U32)(seqState.prevOffset[i]); }
     }

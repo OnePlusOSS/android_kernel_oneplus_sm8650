@@ -308,6 +308,19 @@ _DB845C_MODULE_OUTS = [
     "sound/soc/qcom/snd-soc-qcom-sdw.ko",
     "sound/soc/qcom/snd-soc-sdm845.ko",
     "sound/soc/qcom/snd-soc-sm8250.ko",
+    "kernel/oplus_cpu/cpufreq_health/oplus_bsp_cpufreq_health.ko",
+    "kernel/oplus_cpu/thermal/horae_shell_temp.ko",
+    "kernel/oplus_cpu/sched/sched_assist/oplus_bsp_sched_assist.ko",
+    "kernel/oplus_cpu/sched/frame_boost/oplus_bsp_frame_boost.ko",
+    "kernel/oplus_cpu/sched/task_cpustats/oplus_bsp_task_cpustats.ko",
+    "kernel/oplus_cpu/sched/task_sched/oplus_bsp_task_sched.ko",
+    "kernel/oplus_cpu/sched/sched_info/oplus_bsp_schedinfo.ko",
+    "kernel/oplus_cpu/uad/cpufreq_uag.ko",
+    "kernel/oplus_cpu/uad/ua_cpu_ioctl.ko",
+    "kernel/oplus_cpu/oplus_omrg/oplus_bsp_omrg.ko",
+    "kernel/oplus_cpu/cpufreq_bouncing/cpufreq_bouncing.ko",
+    "kernel/oplus_cpu/thermal/oplus_ipa_thermal.ko",
+    "kernel/oplus_cpu/oplus_overload/oplus_bsp_task_overload.ko",
 ]
 
 _DB845C_WATCHDOG_MODULE_OUTS = [
@@ -461,6 +474,17 @@ _ROCKPI4_MODULE_OUTS = [
     "drivers/virtio/virtio_pci_legacy_dev.ko",
     "drivers/virtio/virtio_pci_modern_dev.ko",
     "net/core/failover.ko",
+    "kernel/oplus_cpu/cpufreq_health/oplus_bsp_cpufreq_health.ko",
+    "kernel/oplus_cpu/sched/sched_assist/oplus_bsp_sched_assist.ko",
+    "kernel/oplus_cpu/sched/frame_boost/oplus_bsp_frame_boost.ko",
+    "kernel/oplus_cpu/sched/task_cpustats/oplus_bsp_task_cpustats.ko",
+    "kernel/oplus_cpu/sched/task_sched/oplus_bsp_task_sched.ko",
+    "kernel/oplus_cpu/sched/sched_info/oplus_bsp_schedinfo.ko",
+    "kernel/oplus_cpu/uad/cpufreq_uag.ko",
+    "kernel/oplus_cpu/uad/ua_cpu_ioctl.ko",
+    "kernel/oplus_cpu/oplus_omrg/oplus_bsp_omrg.ko",
+    "kernel/oplus_cpu/cpufreq_bouncing/cpufreq_bouncing.ko",
+    "kernel/oplus_cpu/oplus_overload/oplus_bsp_task_overload.ko",
 ]
 
 _ROCKPI4_WATCHDOG_MODULE_OUTS = [
@@ -644,6 +668,29 @@ ddk_headers(
     visibility = ["//visibility:public"],
 )
 
+# oplus modules depend on ack need headers add here
+# globs() for all architectures
+filegroup(
+    name = "all_headers_allowlist_common_globs_oplus",
+    srcs = glob([
+        "kernel/**/*.h",
+        "fs/**/*.h",
+        "**/**/*.h",
+        "scripts/dtc/libfdt/*.h",
+        "mm/*.h",
+    ]),
+    visibility = ["//visibility:private"],
+)
+# oplus modules depend on ack need directory add here
+linux_includes_oplus = [
+    "include/linux",
+    "include/trace",
+    "kernel",
+    "fs/proc",
+    "mm",
+    ".",
+]
+
 # Implementation details for DDK headers. The targets below cannot be directly
 # depended on by DDK modules.
 
@@ -654,6 +701,7 @@ ddk_headers(
     hdrs = [
         ":all_headers_allowlist_aarch64_globs",
         ":all_headers_allowlist_common_globs",
+        ":all_headers_allowlist_common_globs_oplus",
     ],
     # The list of include directories where source files can #include headers
     # from. In other words, these are the `-I` option to the C compiler.
@@ -663,7 +711,7 @@ ddk_headers(
         "arch/arm64/include/uapi",
         "include",
         "include/uapi",
-    ],
+    ] + linux_includes_oplus,
     visibility = ["//visibility:private"],
 )
 

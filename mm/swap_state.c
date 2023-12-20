@@ -573,7 +573,11 @@ static unsigned long swapin_nr_pages(unsigned long offset)
 	unsigned int hits, pages, max_pages;
 	static atomic_t last_readahead_pages;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	max_pages = 1;
+#else
 	max_pages = 1 << READ_ONCE(page_cluster);
+#endif
 	if (max_pages <= 1)
 		return 1;
 
@@ -720,8 +724,17 @@ static void swap_ra_info(struct vm_fault *vmf,
 	pte_t *tpte;
 #endif
 
+	/*
+	 * readahead on zram1 will lead to swap leak as swapout only
+	 * calls swap_alloc_cluster which doesn't reclaim readahead
+	 * swapcache
+	 */
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	max_win = 1;
+#else
 	max_win = 1 << min_t(unsigned int, READ_ONCE(page_cluster),
 			     SWAP_RA_ORDER_CEILING);
+#endif
 	if (max_win == 1) {
 		ra_info->win = 1;
 		return;

@@ -3748,4 +3748,880 @@ madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 }
 #endif
 
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+#define CONFIG_CONT_PTE_HUGEPAGE_DEBUG	1
+#define CONFIG_CONT_PTE_FAULT_AROUND	1
+#define EROFS_IOERROR_INJECTION		0
+#define CONFIG_CONT_PTE_HUGEPAGE_ANON_DEBUG 1
+#define CONFIG_POOL_ASYNC_RECLAIM 1
+#define CONFIG_REUSE_SWP_ACCOUNT_DEBUG 1
+#define CONFIG_MAPPED_WALK_MIDDLE_CONT_PTE_DEBUG 1
+#define CONFIG_NON_SPF_FAULT_RETRY_DEBUG 1
+#define CONFIG_CONT_PTE_FILE_HUGEPAGE_DISABLE 1
+#define CONFIG_CHP_ABNORMAL_PTES_DEBUG 1
+
+#if CONFIG_POOL_ASYNC_RECLAIM
+#define CONFIG_CONT_PTE_HUGEPAGE_LRU	1
+#endif
+
+#if CONFIG_POOL_ASYNC_RECLAIM
+#define CONFIG_POOL_DIRECT_RECLAIM	0
+#endif
+
+
+#if !CONFIG_CONT_PTE_FILE_HUGEPAGE_DISABLE
+#define may_cont_pte android_kabi_reserved1 /* struct inode */
+#endif
+
+#define HPAGE_CONT_PTE_SHIFT	CONT_PTE_SHIFT
+#define HPAGE_CONT_PTE_ORDER	(CONT_PTE_SHIFT-PAGE_SHIFT)
+#define HPAGE_CONT_PTE_SIZE	CONT_PTE_SIZE
+#define HPAGE_CONT_PTE_MASK	CONT_PTE_MASK
+#define HPAGE_CONT_PTE_NR	CONT_PTES
+
+#define THP_SWAP_PRIO_MAGIC (0x1ead)
+
+#define ALIGN_UP(x, align_to) (((x) + ((align_to)-1)) & ~((align_to)-1))
+
+#define CLUSTER_FLAG_DOUBLE_MAP 8 /* This cluster is double-mapped */
+
+/* look_around use +1, ksrhink_lruvecd uses +2/+3 */
+#define PG_cont (__NR_PAGEFLAGS + 4)
+#define PG_cont_uptodate (PG_cont + 1)
+#define PG_cont_iodoing (PG_cont + 2)
+#define PG_cont_ioredo_s (PG_cont + 3)
+#define PG_cont_ioredo_e (PG_cont + 5)
+#define PG_cont_fallback (PG_cont + 6)
+#define PG_cont_refill (PG_cont + 7)
+#define PG_cont_ext_alloc (PG_cont + 8)
+
+#define PageCont(page) test_bit(PG_cont, &(page)->flags)
+#define SetPageCont(page) set_bit(PG_cont, &(page)->flags)
+#define ClearPageCont(page) clear_bit(PG_cont, &(page)->flags)
+#define TestClearPageCont(page) test_and_clear_bit(PG_cont, &(page)->flags)
+
+#define PageContUptodate(page) test_bit(PG_cont_uptodate, &(page)->flags)
+#define SetPageContUptodate(page) set_bit(PG_cont_uptodate, &(page)->flags)
+#define ClearPageContUptodate(page) clear_bit(PG_cont_uptodate, &(page)->flags)
+#define TestClearPageContUptodate(page) test_and_clear_bit(PG_cont_uptodate, &(page)->flags)
+
+#define PageContIODoing(page) test_bit(PG_cont_iodoing, &(page)->flags)
+#define SetPageContIODoing(page) set_bit(PG_cont_iodoing, &(page)->flags)
+#define ClearPageContIODoing(page) clear_bit(PG_cont_iodoing, &(page)->flags)
+#define TestClearPageContIODoing(page) test_and_clear_bit(PG_cont_iodoing, &(page)->flags)
+#define TestSetPageContIODoing(page) test_and_set_bit(PG_cont_iodoing, &(page)->flags)
+
+#define PageContFallback(page) test_bit(PG_cont_fallback, &(page)->flags)
+#define SetPageContFallback(page) set_bit(PG_cont_fallback, &(page)->flags)
+#define ClearPageContFallback(page) clear_bit(PG_cont_fallback, &(page)->flags)
+#define TestClearPageContFallback(page) test_and_clear_bit(PG_cont_fallback, &(page)->flags)
+
+#define PageContRefill(page) test_bit(PG_cont_refill, &(page)->flags)
+#define SetPageContRefill(page) set_bit(PG_cont_refill, &(page)->flags)
+#define ClearPageContRefill(page) clear_bit(PG_cont_refill, &(page)->flags)
+#define TestClearPageContRefill(page) test_and_clear_bit(PG_cont_refill, &(page)->flags)
+
+#define PageContExtAlloc(page) test_bit(PG_cont_ext_alloc, &(page)->flags)
+#define SetPageContExtAlloc(page) set_bit(PG_cont_ext_alloc, &(page)->flags)
+#define ClearPageContExtAlloc(page) clear_bit(PG_cont_ext_alloc, &(page)->flags)
+#define TestClearPageContExtAlloc(page) test_and_clear_bit(PG_cont_ext_alloc, &(page)->flags)
+
+#define SetPageHead(page) set_bit(PG_head, &(page)->flags)
+
+#define NORMAL_HUGE	1
+#define JAR_HUGE	2
+
+/* enum fault_flag, in case mainline is going to use 11-14 */
+#define FAULT_FLAG_CONT_PTE	(1 << 15)
+
+#define HIT_THP		0
+#define HIT_CONT	1
+#define HIT_BASEPAGE	2
+#define HIT_NOTHING	3
+
+#define MAX_POOL_ALLOC_RETRIES (2)
+
+#if CONFIG_POOL_ASYNC_RECLAIM
+enum pool_watermarks {
+	POOL_WMARK_MIN,
+	POOL_WMARK_LOW,
+	POOL_WMARK_HIGH,
+	POOL_NR_WMARK
+};
+
+#define POOL_USER_ALLOC (1 << 31)
+#define POOL_USER_ALLOC_MASK (1 << 31)
+/* add new flags to enum pgdat_flags  for pool wakeup kswapd */
+#define PGDAT_POOL_USER_ALLOC (PGDAT_RECLAIM_LOCKED + 1)
+
+#define POOL_DIRECT_RECLAIM_NR 5
+#define POOL_DIRECT_RECLAIM_PRIORITY 4
+#define POOL_FILE_HUGEPAGES_LIMIT  (500 * SZ_1M / PAGE_SIZE)
+
+/* FIXME: temp use for perf debug! */
+#define POOL_KSWAPD_RECLAIM 0
+#define POOL_DIRECT_RECLAIM 1
+#define POOL_RECLAIM_ITEM	2
+#define POOL_RECLAIM_SEQ_ITEM	20
+
+#define POOL_DIRECT_RECLAIM_ENTER 0
+#define POOL_DIRECT_RECLAIM_SUCCESS 1
+#define POOL_DIRECT_RECLAIM_FAIL 2
+#define POOL_DIRECT_RECLAIM_ITEM 3
+
+#define POOL_OOM_ENTER 0
+#define POOL_OOM_SUCCESS 1
+#define POOL_OOM_FAIL 2
+#define POOL_OOM_ITEM 3
+
+extern wait_queue_head_t pool_direct_reclaim_wait[MAX_NUMNODES];
+#endif /* CONFIG_POOL_ASYNC_RECLAIM */
+
+/* NOTE: for chp debug loglvl */
+extern bool config_bug_on;
+
+#define CHP_TAG "CHP"
+#define CHP_LOG_LVL 1
+
+enum {
+	CHP_LOG_VERBOSE = 0,
+	CHP_LOG_INFO,
+	CHP_LOG_DEBUG,
+	CHP_LOG_ERR,
+};
+
+static inline char chp_loglvl_to_char(int l)
+{
+	switch (l) {
+	case CHP_LOG_VERBOSE:
+		return 'V';
+	case CHP_LOG_INFO:
+		return 'I';
+	case CHP_LOG_DEBUG:
+		return 'D';
+	case CHP_LOG_ERR:
+		return 'E';
+	}
+	return '?';
+}
+
+#define chp_log(l, f, ...) do {						\
+	if (l >= CHP_LOG_LVL) 						\
+		printk(KERN_INFO "%s %5d %5d %c %-16s: %s:%d "f,	\
+		       CHP_TAG, current->tgid, current->pid,		\
+		       chp_loglvl_to_char(l), current->comm, __func__,  \
+		       __LINE__,  ##__VA_ARGS__);			\
+} while (0)
+
+#define chp_loge(f, ...)						\
+	chp_log(CHP_LOG_ERR, f, ##__VA_ARGS__)
+
+#define chp_logi(f, ...)						\
+	chp_log(CHP_LOG_INFO, f, ##__VA_ARGS__)
+
+#define CHP_BUG_ON(condition) do {					\
+	if (unlikely(config_bug_on && condition)) BUG();		\
+} while (0)
+
+#define CHP_BUG_ON_EMERGENCY(condition) do {				\
+	if (unlikely(condition)) BUG();					\
+} while (0)
+/**************************************/
+
+#define UNALIGNED_CONT_PTE_WARN WARN_ON
+
+enum hpage_type {
+	HPAGE_POOL_CMA,
+	HPAGE_POOL_BUDDY,
+
+	NR_HPAGE_POOL_TYPE,
+};
+
+#define CONFIG_CONT_PTE_EXT_MIGRATETYPE		1
+
+#if CONFIG_CONT_PTE_HUGEPAGE_LRU
+/*
+ * Use the deferred_split field in memcg or node to hold a pointer to
+ * lruvec (the split_queue_len in the deferred_split structure is reused
+ * as a pointer to this new lruvec), When a cont-pte hugepage is added to
+ * an lru, it is added to the lruvec to improve reclaim efficiency.
+ *
+ * Note:
+ * 1.Some of the accounting related to lru is still in some of the
+ * original data structures.
+ * 2.The chp is short for "cont pte hugepage".
+*/
+struct chp_lruvec {
+	struct lruvec lruvec;
+	unsigned long lru_zone_size[MAX_NR_ZONES][NR_LRU_LISTS];
+	struct deferred_split *ds; /* Point back to deferred_split */
+};
+
+
+#define CHP_SWAP_CLUSTER_MAX 256UL
+
+#define LRUVEC_FOR_CHP  1
+static inline bool is_chp_lruvec(struct lruvec *lruvec)
+{
+	return test_bit(LRUVEC_FOR_CHP, &lruvec->flags);
+}
+
+extern struct chp_lruvec contig_chp_lruvec;
+#define NODE_CHP_LRUVEC(nid)    (&contig_chp_lruvec)
+
+extern struct mem_cgroup_per_node *chp_lruvec_to_memcg_pn(struct lruvec *lruvec);
+#endif /* CONFIG_CONT_PTE_HUGEPAGE_LRU */
+
+enum vm_chp_event_item {
+	CHP_PAGE_ALLOC_SLOWPATH = 0,
+	CHP_PAGE_ALLOC_FAIELD,
+
+	CHP_MADV_FREE,
+	CHP_MADV_DONTNEED_UNALIGNED,
+
+	CHP_REFILL_WORKER_WAKE_UP,
+	CHP_REFILL_WORKER_ALLOC_SUCCESS,
+
+	CHP_REFILL_EXTALLOC,
+	CHP_ALLOC_ZSMALLOC,
+	CHP_ALLOC_GPU,
+	CHP_ALLOC_DMABUF,
+	CHP_ALLOC_FROM_BUDDY_POOL,
+
+	THP_DO_ANON_PAGES,
+	THP_DO_ANON_PAGES_FALLBACK,
+
+	THP_SWPIN_NO_SWAPCACHE_ENTRY,
+	THP_SWPIN_NO_SWAPCACHE_ALLOC_SUCCESS,
+	THP_SWPIN_NO_SWAPCACHE_ALLOC_FAIL,
+	THP_SWPIN_NO_SWAPCACHE_FALLBACK_ENTRY,
+	THP_SWPIN_NO_SWAPCACHE_FALLBACK_ALLOC_SUCCESS,
+	THP_SWPIN_NO_SWAPCACHE_FALLBACK_ALLOC_FAIL,
+	THP_SWPIN_SWAPCACHE_ENTRY,
+	THP_SWPIN_SWAPCACHE_ALLOC_SUCCESS,
+	THP_SWPIN_SWAPCACHE_PREPARE_FAIL,
+	THP_SWPIN_SWAPCACHE_FALLBACK_ENTRY,
+	THP_SWPIN_SWAPCACHE_FALLBACK_ALLOC_SUCCESS,
+	THP_SWPIN_SWAPCACHE_FALLBACK_ALLOC_FAIL,
+
+	THP_FILE_ENTRY,
+	THP_FILE_ALLOC_SUCCESS,
+	THP_FILE_ALLOC_FAIL,
+
+	THP_SWPIN_CRITICAL_ENTRY,
+	THP_SWPIN_CRITICAL_FALLBACK,
+
+	NR_VM_CHP_EVENT_ITEMS
+};
+
+enum thp_read_swpcache_ret_status {
+	RET_STATUS_ALLOC_THP_SUCCESS,
+	RET_STATUS_NO_SWP_INFO,
+	RET_STATUS_HIT_SWPCACHE,
+	RET_STATUS_NO_CLUSTER_INFO,
+	RET_STATUS_ZERO_SWPCOUNT,
+	RET_STATUS_ALLOC_THP_FAIL,
+	RET_STATUS_SWPCACHE_RPEPARE_FAIL,
+	RET_STATUS_ADD_TO_SWPCACHE_FAIL,
+	RET_STATUS_MEMCG_CHARGE_FAIL,
+	RET_STATUS_OTHER_FAIL,
+	RET_STATUS_NR,
+};
+
+enum WP_REUSE_FAIL_STAT {
+       WP_REUSE_FAIL_TOTAL,
+       PTE_NO_SAME,
+       PTE_NO_READONLY,
+       ZERO_REF_COUNT,
+       WP_REUSE_FAIL_NR,
+};
+
+#if CONFIG_REUSE_SWP_ACCOUNT_DEBUG
+enum REUSE_SWP_STAT {
+	NORMAL_REUSE_SWP_WB,
+	NORMAL_REUSE_SWP_NO_WB,
+	NORMAL_REUSE_SWP_WB_ERR,
+	CHP_REUSE_SWP_WB,
+	CHP_REUSE_SWP_NO_WB,
+	CHP_REUSE_SWP_WB_ERR,
+	REUSE_SWP_NR,
+};
+#endif
+
+#if CONFIG_MAPPED_WALK_MIDDLE_CONT_PTE_DEBUG
+#define MAPPED_WALK_HIT_SEQ 10
+struct mapped_walk_middle_cont_pte_stat {
+       unsigned long ori_addr, addr;
+       pteval_t pte[HPAGE_CONT_PTE_NR];
+       struct page *page;
+       unsigned long page_pfn;
+       unsigned long pte_pfn;
+};
+#endif
+
+#if CONFIG_NON_SPF_FAULT_RETRY_DEBUG
+enum NON_SFP_FAULT_RETRY_STAT {
+	SWPIN_CHP_FAULT_RETRY,
+	SWPIN_FALLBACK_FAULT_RETRY,
+	FAULT_RETRY_NR,
+};
+#endif
+
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+#define CHP_ABMORMAL_PTES_SEQ 100
+#define CORRUPT_CONT_PTE_REASON_MASK			0x00000000ffffffff
+#define DOUBLE_MAP_REASON_MASK 				0xffffffff00000000
+/* bit:0-31 -> corrupt cont pte */
+#define CORRUPT_CONT_PTE_REASON_MADVISE_PAGE_OUT	0x0000000000000001
+#define CORRUPT_CONT_PTE_REASON_MADVISE_FREE1		0x0000000000000002
+#define CORRUPT_CONT_PTE_REASON_MADVISE_FREE2		0x0000000000000004
+#define CORRUPT_CONT_PTE_REASON_CP_PTE_RANGE1		0x0000000000000008
+#define CORRUPT_CONT_PTE_REASON_CP_PTE_RANGE2		0x0000000000000010
+#define CORRUPT_CONT_PTE_REASON_ZAP_PTE_RANGE		0x0000000000000020
+#define CORRUPT_CONT_PTE_REASON_WP_PAGE_CP1		0x0000000000000040
+#define CORRUPT_CONT_PTE_REASON_WP_PAGE_CP2		0x0000000000000080
+#define CORRUPT_CONT_PTE_REASON_DO_WP_PAGE		0x0000000000000100
+#define CORRUPT_CONT_PTE_REASON_PTE_FAULT		0x0000000000000200
+#define CORRUPT_CONT_PTE_REASON_CH_PTE_RANGE		0x0000000000000400
+#define CORRUPT_CONT_PTE_REASON_PAGE_REFS_ONE		0x0000000000000800
+#define CORRUPT_CONT_PTE_REASON_SPLIT_CONT_PTE		0x0000000000001000
+#define CORRUPT_CONT_PTE_REASON_PTE_READONLY		0x0000000000002000
+#define CORRUPT_CONT_PTE_REASON_PTE_PRERM		0x0000000000004000
+/* bit:32-63 -> double map */
+#define DOUBLE_MAP_REASON_MADVISE			0x0000000100000000
+#define DOUBLE_MAP_REASON_DO_SWAP_PAGE1			0x0000000200000000
+#define DOUBLE_MAP_REASON_DO_SWAP_PAGE2			0x0000000400000000
+#define DOUBLE_MAP_REASON_SPLIT_VMA			0x0000000800000000
+#define DOUBLE_MAP_REASON_MOVE_PTES			0x0000001000000000
+#define DOUBLE_MAP_REASON_DO_SWAP_PAGE3			0x0000002000000000
+#define DOUBLE_MAP_REASON_DO_SWAP_PAGE4			0x0000004000000000
+
+struct chp_abnormal_ptes_stat {
+	uid_t uid;
+	pid_t pid;
+	char comm[TASK_COMM_LEN];
+	unsigned long reason;
+};
+#endif /* CONFIG_CHP_ABNORMAL_PTES_DEBUG */
+
+struct cont_pte_huge_page_stat {
+	/* reserved last index for alloc fail */
+	atomic64_t usage[NR_HPAGE_POOL_TYPE];
+	atomic64_t thp_read_swpcache_ret_status_stat[RET_STATUS_NR];
+#if CONFIG_POOL_ASYNC_RECLAIM
+	atomic64_t kswapd_wakeup_count;
+	atomic64_t wmark_count[2];
+	atomic64_t direct_reclaim_stat[POOL_DIRECT_RECLAIM_ITEM];
+	atomic64_t oom_stat[POOL_OOM_ITEM];
+	atomic64_t reclaim_seq[POOL_RECLAIM_ITEM];
+	atomic64_t reclaim_count[POOL_RECLAIM_ITEM][POOL_RECLAIM_SEQ_ITEM];
+	s64 reclaim_time[POOL_RECLAIM_ITEM][POOL_RECLAIM_SEQ_ITEM];
+#endif
+	s64 chunk_refill_time;
+	atomic64_t chunk_refill_fail_count;
+	s64 chunk_refill_first_fail_num;
+	atomic64_t cma_steal_count;
+	atomic64_t wp_reuse_fail_count[WP_REUSE_FAIL_NR];
+#if CONFIG_REUSE_SWP_ACCOUNT_DEBUG
+	/* for reuse_swap_page */
+	atomic64_t reuse_swp_count[REUSE_SWP_NR];
+#endif
+	atomic64_t truncate_hit_middle_page_cnt;
+	atomic64_t cp_cont_pte_split_count;
+#if CONFIG_MAPPED_WALK_MIDDLE_CONT_PTE_DEBUG
+	atomic64_t mapped_walk_middle_cont_pte_cnt;
+	atomic64_t mapped_walk_start_from_non_head;
+	atomic64_t mapped_walk_lastmoment_doublemap;
+	struct mapped_walk_middle_cont_pte_stat mapped_walk_stat[MAPPED_WALK_HIT_SEQ];
+#endif
+#if CONFIG_NON_SPF_FAULT_RETRY_DEBUG
+	atomic64_t non_sfp_fault_retry_cnt[FAULT_RETRY_NR];
+#endif
+
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+	atomic64_t chp_abnormal_ptes_uid_cnt;
+	struct chp_abnormal_ptes_stat abps[CHP_ABMORMAL_PTES_SEQ];
+#endif
+};
+
+extern struct cont_pte_huge_page_stat perf_stat;
+
+struct huge_page_pool {
+#if CONFIG_POOL_ASYNC_RECLAIM
+	unsigned long wmark[POOL_NR_WMARK];
+#endif
+	int count[NR_HPAGE_POOL_TYPE];
+	int low, high;
+	int min_buddy;
+	int cma_count;
+	unsigned long flags;
+	struct list_head items[NR_HPAGE_POOL_TYPE];
+	spinlock_t spinlock;
+	struct task_struct *refill_worker;
+};
+
+extern atomic_long_t cont_pte_double_map_count;
+extern atomic64_t thp_swpin_hit_swapcache;
+extern atomic64_t thp_cow;
+extern atomic64_t thp_cow_fallback;
+extern const char * const ext_migratetype_names[EXT_MIGRATE_TYPES];
+
+static inline bool transhuge_cont_pte_addr_suitable(struct vm_area_struct *vma,
+						    unsigned long haddr)
+{
+	return ((haddr >= vma->vm_start) && (haddr + HPAGE_CONT_PTE_SIZE <= vma->vm_end));
+}
+
+static inline bool transhuge_cont_pte_vma_aligned(struct vm_area_struct *vma)
+{
+	return IS_ALIGNED((vma->vm_start >> PAGE_SHIFT) - vma->vm_pgoff, HPAGE_CONT_PTE_NR);
+
+}
+
+extern inline bool transhuge_cont_pte_vma_suitable(struct vm_area_struct *vma,
+						   unsigned long haddr);
+
+extern bool reuse_swap_cont_pte_page(struct page *page, int *total_map_swapcount);
+
+#define cont_ptep_clear_flush_young_notify(__vma, __address, __ptep)	\
+({									\
+	int __young = 0;						\
+	unsigned long i;						\
+	struct vm_area_struct *___vma = __vma;				\
+	unsigned long ___address = __address & HPAGE_CONT_PTE_MASK;	\
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++)				\
+		__young |= ptep_test_and_clear_young(___vma,		\
+						    ___address +	\
+						    i * PAGE_SIZE,	\
+						    __ptep + i);	\
+	__young |= mmu_notifier_clear_flush_young(___vma->vm_mm,	\
+						___address,		\
+						___address +		\
+						HPAGE_CONT_PTE_SIZE);	\
+	__young;							\
+})
+
+#define cont_ptep_clear_flush_young_full(__vma, __address, __ptep)	\
+({									\
+	int __young = 0;						\
+	unsigned long i;						\
+	struct vm_area_struct *___vma = __vma;				\
+	unsigned long ___address = __address & HPAGE_CONT_PTE_MASK;	\
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++)				\
+		__young |= ptep_test_and_clear_young(___vma,		\
+						    ___address +	\
+						    i * PAGE_SIZE,	\
+						    __ptep + i);	\
+	if (__young)							\
+		flush_tlb_range(___vma, ___address,			\
+			___address + HPAGE_CONT_PTE_SIZE);		\
+})
+
+static inline bool cont_pte_none(pte_t *ptep)
+{
+	int i;
+
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+		if (!pte_none(*(ptep + i)))
+			return false;
+	}
+
+	return true;
+}
+
+/* from is_transparent_hugepage */
+static inline bool __is_transparent_hugepage(struct page *page)
+{
+	if (!PageCompound(page))
+		return false;
+
+	page = compound_head(page);
+	return is_huge_zero_page(page) ||
+		page[1].compound_dtor == TRANSHUGE_PAGE_DTOR;
+}
+
+static inline bool ContPteHugePageHead(struct page *page)
+{
+	if (PageTail(page))
+		return false;
+
+	return PageHead(page)
+	    && compound_order(page) == HPAGE_CONT_PTE_ORDER
+	    && (__is_transparent_hugepage(page) || PageContExtAlloc(page));
+
+}
+
+/* folio version of ContPteHugePageHead */
+static inline bool ContPteHugeFolio(struct folio *folio)
+{
+	struct page *page = folio_page(folio, 0);
+
+	return folio_test_large(folio)
+	&& compound_order(page) == HPAGE_CONT_PTE_ORDER
+	&& (__is_transparent_hugepage(page) || PageContExtAlloc(page));
+}
+
+extern inline bool within_cont_pte_cma(unsigned long pfn);
+
+static inline bool ContPteExtLRUHugePageHead(struct page *page)
+{
+	if (!ContPteHugePageHead(page))
+		return false;
+#if CONFIG_CONT_PTE_EXT_MIGRATETYPE
+	return is_migrate_ext(get_pageblock_migratetype(page));
+#else
+	return within_cont_pte_cma(page_to_pfn(page));
+#endif
+}
+
+static inline bool ContPteExtLRUHugeFolio(struct folio *folio)
+{
+	if (!ContPteHugeFolio(folio))
+		return false;
+
+#if CONFIG_CONT_PTE_EXT_MIGRATETYPE
+	return is_migrate_ext(get_pageblock_migratetype(folio_page(folio, 0)));
+#else
+	return within_cont_pte_cma(folio_pfn(folio));
+#endif
+}
+
+extern bool allow_3order_use_extmigratetype_early(void);
+extern bool allow_3order_use_extmigratetype_later(void);
+extern spinlock_t ext_mt_spinlock;
+/**
+ * cont_pte_nr_pages - The number of regular pages in this cont-pte hugepage.
+ * @page: The head page of a cont-pte hugepage.
+ *  NOTE: use injudiciously!
+ */
+static inline int cont_pte_nr_pages(struct page *page)
+{
+	VM_BUG_ON_PGFLAGS(PageTail(page), page);
+	if (PageHead(page)) {
+		return page[1].compound_nr;
+	} else if (PageCont(page)) {
+		CHP_BUG_ON(!IS_ALIGNED(page_to_pfn(page), HPAGE_CONT_PTE_NR));
+		return HPAGE_CONT_PTE_NR;
+	}
+
+	return 1;
+}
+
+static inline bool ContPteHugePage(struct page *page)
+{
+	return PageTransCompound(page)
+	    && compound_order(compound_head(page)) == HPAGE_CONT_PTE_ORDER
+	    && __is_transparent_hugepage(page);
+}
+
+/*
+ * huge file pages for .so, .oat. .odex in erofs are mapped massively, they are likely
+ * to be hot
+ */
+static inline bool ContPteHugePageSkipMassiveMapped(struct page *page)
+{
+	if (page && PageCont(page) && PageHead(page) && atomic_read(&page->_mapcount) > 20) {
+		/*
+		 * try to slow down the rmap for massively mapped hugepages, but we
+		 * still scan them so that they can be reclaimed if they are really
+		 * cold. skip 3/4 rmap.
+		 */
+		static int scan_pos;
+
+		return (scan_pos++ % 4) != 0;
+	}
+
+	return false;
+}
+
+static inline bool ContPteHugePageDoubleMap(struct page *page)
+{
+	int i;
+	struct page *head = compound_head(page);
+
+	if (PageAnon(head)) {
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+			if (atomic_read(&head[i]._mapcount) >= 0)
+				return true;
+		}
+	} else {
+
+		if (!PageDoubleMap(head))
+			return false;
+
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+			if (atomic_read(&head[i]._mapcount) !=
+					atomic_read(compound_mapcount_ptr(head)))
+				return true;
+		}
+
+		if (TestClearPageDoubleMap(page))
+			atomic_long_dec(&cont_pte_double_map_count);
+	}
+
+	return false;
+}
+
+/* folio version of ContPteHugePageDoubleMap */
+static inline bool ContPteHugeFolioDoubleMap(struct folio *folio)
+{
+	int i;
+	struct page *head;
+
+	/* FIXME: will delete! */
+	CHP_BUG_ON(!ContPteHugeFolio(folio));
+
+	head = folio_page(folio, 0);
+	if (PageAnon(head)) {
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+			if (atomic_read(&head[i]._mapcount) >= 0)
+				return true;
+		}
+	} else {
+		if (!PageDoubleMap(head))
+			return false;
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+			if (atomic_read(&head[i]._mapcount) !=
+					atomic_read(compound_mapcount_ptr(head)))
+				return true;
+		}
+		if (TestClearPageDoubleMap(head))
+			atomic_long_dec(&cont_pte_double_map_count);
+	}
+
+	return false;
+}
+
+extern struct cma *cont_pte_cma;
+extern unsigned long swap_cluster_double_mapped;
+
+extern inline bool is_cont_pte_cma(struct cma *cma);
+
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+extern inline void commit_chp_abnormal_ptes_record(unsigned long reason);
+extern inline void check_cont_pte_trans_huge(pte_t *ptep, unsigned long reason);
+#endif
+
+#if !CONFIG_CONT_PTE_FILE_HUGEPAGE_DISABLE
+static inline int vmf_may_cont_pte(struct vm_fault *vmf)
+{
+	struct file *file = vmf->vma->vm_file;
+	struct address_space *mapping = file ? file->f_mapping : NULL;
+	struct inode *inode = mapping ? mapping->host : NULL;
+
+	return inode ? inode->may_cont_pte : false;
+}
+#endif
+
+static inline int cow_cont_pte_user_page(struct page *dst, struct page *src,
+					 struct vm_fault *vmf)
+{
+	unsigned long addr = vmf->address & HPAGE_CONT_PTE_MASK;
+	int i;
+
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+		copy_user_highpage(dst + i, src + i, addr + PAGE_SIZE, vmf->vma);
+	}
+	return 0;
+}
+
+static inline bool cont_pte_readonly(struct vm_fault *vmf)
+{
+	int i, nr = 0;
+	unsigned long haddr = vmf->address & HPAGE_CONT_PTE_MASK;
+	pte_t *ptep = vmf->pte - (vmf->address - haddr)/PAGE_SIZE;
+
+	/* someone else has changed ptes to non-cont */
+	if (!pte_cont(*ptep))
+		return false;
+
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++, ptep++) {
+		if (pte_write(*ptep))
+			nr++;
+
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+		if (!pte_cont(*ptep)) {
+			check_cont_pte_trans_huge(ptep, CORRUPT_CONT_PTE_REASON_PTE_READONLY);
+		}
+#endif
+	}
+
+	if (nr != HPAGE_CONT_PTE_NR && nr != 0) {
+		ptep -= HPAGE_CONT_PTE_NR;
+		printk(KERN_ERR "@@@Fixme- partially writable in hugepage: %s current:%s-%d nr:%d fault addr:%lx vma start:%lx end:%lx "
+				"ptep:%lx ptes:%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx \n",
+				__func__, current->comm, current->pid, nr, vmf->address, vmf->vma->vm_start, vmf->vma->vm_end,
+				(unsigned long)ptep, pte_val(*(ptep + 0)), pte_val(*(ptep + 1)), pte_val(*(ptep + 2)), pte_val(*(ptep + 3)),
+				pte_val(*(ptep + 4)), pte_val(*(ptep + 5)), pte_val(*(ptep + 6)), pte_val(*(ptep + 7)),
+				pte_val(*(ptep + 8)), pte_val(*(ptep + 9)), pte_val(*(ptep + 10)), pte_val(*(ptep + 11)),
+				pte_val(*(ptep + 12)), pte_val(*(ptep + 13)), pte_val(*(ptep + 14)), pte_val(*(ptep + 15)));
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+		commit_chp_abnormal_ptes_record(CORRUPT_CONT_PTE_REASON_PTE_PRERM);
+#endif
+		CHP_BUG_ON(1);
+	}
+
+	return !nr;
+}
+
+static inline bool vma_is_chp_anonymous(struct vm_area_struct *vma)
+{
+	return vma->android_kabi_reserved2 == THP_SWAP_PRIO_MAGIC;
+}
+
+static inline int chp_swapin_nr_pages(struct page *page)
+{
+	if (PageContFallback(page))
+		return HPAGE_CONT_PTE_NR;
+
+	return thp_nr_pages(page);
+}
+
+#define cont_pte_pagefault_dump(vmf, reason) do { \
+	struct vm_area_struct *vma = vmf->vma; \
+	const char *name = vma->vm_file->f_path.dentry ? (const char *)vma->vm_file->f_path.dentry->d_name.name : "NULL"; \
+															\
+	pr_debug("%s %s %d: filename:%s inode:%ld process:%s aligned:%d index:%lx-%lx vm_pgoff:%lx vma:%lx-%lx r:%d w:%d x:%d mw:%d flags:%lx\n", \
+			reason, __func__, __LINE__, name, vma->vm_file->f_inode->i_ino,  current->comm, transhuge_cont_pte_vma_aligned(vma), \
+			vmf->page ? vmf->page->index : -1UL, vmf->pgoff, vma->vm_pgoff, (unsigned long)vma->vm_start, (unsigned long)vma->vm_end, \
+			!!(vma->vm_flags & VM_READ), !!(vma->vm_flags & VM_WRITE), !!(vma->vm_flags & VM_EXEC), \
+			!!(vma->vm_flags & VM_MAYWRITE), vma->vm_flags);\
+	} while (0)
+
+extern unsigned long cont_pte_pool_cma_size;
+extern bool cma_chunk_refill_ready;
+extern bool supported_oat_hugepage;
+
+extern inline bool cont_pte_huge_page_enabled(void);
+
+extern pte_t cont_pte_huge_ptep_get_and_clear(struct mm_struct *mm,
+					      unsigned long addr, pte_t *ptep);
+
+extern pte_t cont_pte_huge_ptep_get_and_clear_flush(struct mm_struct *mm,
+					      unsigned long addr, pte_t *ptep);
+
+extern void __split_huge_cont_pte(struct vm_area_struct *vma, pte_t *pte,
+				  unsigned long address, bool freeze,
+				  struct page *page, spinlock_t *ptl);
+
+extern void __split_huge_cont_pte_double_ptl(struct vm_area_struct *vma, pte_t *pte,
+				  unsigned long address, bool freeze,
+				  struct page *page, spinlock_t *src_ptl, spinlock_t *dst_ptl);
+
+extern void change_huge_cont_pte(struct vm_area_struct *vma, pte_t *pte,
+				 unsigned long addr, pgprot_t newprot,
+				 unsigned long cp_flags);
+
+extern void cont_pte_set_huge_pte_wrprotect(struct mm_struct *mm, unsigned long addr,
+			      pte_t *ptep);
+
+extern void cont_pte_set_huge_pte_clean(struct mm_struct *mm, unsigned long addr,
+			      pte_t *ptep);
+
+extern bool set_cont_pte_huge_zero_page(struct mm_struct *mm,
+		struct vm_area_struct *vma, unsigned long faddr, pte_t *pte,
+		struct page *zero_page);
+
+extern void split_huge_cont_pte_address(struct vm_area_struct *vma,
+					unsigned long address, bool freeze,
+					struct page *page);
+
+extern void cont_pte_set_huge_pte_at(struct mm_struct *mm, unsigned long addr,
+			      pte_t *ptep, pte_t pte);
+
+extern int find_get_cont_pte_pages(struct address_space *mapping, pgoff_t start,
+				   struct page **ret_page);
+
+extern struct page *find_get_entry_may_cont_pte(struct address_space *mapping,
+		pgoff_t index);
+
+extern struct file *do_cont_pte_sync_mmap_readahead(struct vm_fault *vmf);
+
+extern struct file *do_cont_pte_async_mmap_readahead(struct vm_fault *vmf, struct page *page);
+
+extern void do_set_cont_pte(struct vm_fault *vmf, struct page *page);
+
+extern void do_set_cont_pte_with_addr(struct vm_fault *vmf,
+				struct page *page,
+				unsigned long addr);
+
+extern void set_cont_pte_uptodate_and_unlock(struct page *page);
+
+extern void init_cont_endio_spinlock(struct inode *inode);
+
+extern int huge_page_pool_count(struct huge_page_pool *pool, int inx);
+extern int cont_pte_pool_total_pages(void);
+extern int cont_pte_pool_high(void);
+extern struct huge_page_pool *cont_pte_pool(void);
+extern bool cont_pte_pool_add(struct page *page);
+
+extern struct page *alloc_cont_pte_hugepage(gfp_t gfp_mask);
+extern struct folio *alloc_cont_pte_folio(gfp_t gfp_mask);
+extern struct page *alloc_chp_ext(gfp_t gfp_mask, int *order);
+
+extern inline void count_vm_chp_events(enum vm_chp_event_item item, long delta);
+extern inline void count_vm_chp_event(enum vm_chp_event_item item);
+extern inline void mod_chp_page_state(struct page *page, long delta);
+
+extern void __free_cont_pte_hugepages(struct page *page);
+
+vm_fault_t cont_pte_filemap_around(struct vm_fault *vmf, pgoff_t start_pgoff, pgoff_t end_pgoff);
+
+extern inline bool is_thp_swap(struct swap_info_struct *si);
+
+extern bool is_critical_native(struct task_struct *tsk);
+
+extern inline bool current_is_hybridswapd(void);
+extern void chp_uid_blacklist_update(void);
+extern unsigned long read_zram_used_pages(int inx);
+extern int chp_madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
+				     unsigned long len_in,
+				     struct anon_vma_name *anon_name,
+				     bool chp_flag);
+
+enum chp_vma_type {
+	CHP_VMA_NONE,
+	CHP_VMA_NATIVE,
+	CHP_VMA_DALVIK,
+};
+
+/* as sys.c #define ANON_VMA_NAME_INVALID_CHARS	"\\`$[]" said, these character
+ * never used for anon_name, use this for chp flag.
+ */
+#define CHP_VMA_NATIVE_STR "["
+#define CHP_VMA_DALVIK_STR "]"
+#define DALVIK_MAIN_HEAP "dalvik-main space (region space)"
+#define NATIVE_HEAP "libc_malloc"
+
+static inline const char *chp_decode_anon_name(const char *name) {
+	if (name[0] == CHP_VMA_NATIVE_STR[0])
+		return NATIVE_HEAP;
+	if (name[0] == CHP_VMA_DALVIK_STR[0])
+		return DALVIK_MAIN_HEAP;
+	return name;
+}
+
+extern enum chp_vma_type chp_handle_prctl_set_anon_name(const char __user *name,
+							char *kname,
+							unsigned long len);
+extern inline void handle_chp_get_unmapped_area(struct vm_unmapped_area_info *info,
+						struct file *filp,
+						unsigned long pgoff);
+extern inline bool handle_chp_ext_cmd(struct sysinfo *si);
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+enum oplus_mm_ext_vh_type {
+	OPLUS_MM_VH_CURRENT_IS_UX = 0,
+	OPLUS_MM_VH_FREE_ZRAM_IS_OK,
+#ifdef CONFIG_OPLUS_FEATURE_UXMEM_OPT
+	OPLUS_MM_VH_CURRENT_IS_KEY,
+#endif
+};
+
+extern inline bool oplus_mm_vh_current_is_fg(void);
+extern inline bool oplus_mm_vh_free_zram_is_ok(void);
+#endif
+
 #endif /* _LINUX_MM_H */

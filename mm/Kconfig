@@ -1208,10 +1208,54 @@ config PER_VMA_LOCK
 	  This feature allows locking each virtual memory area separately when
 	  handling page faults instead of taking mmap_lock.
 
+config CONT_PTE_HUGEPAGE
+	bool "Cont Pte Hugepage support"
+	default y
+	depends on ARM64 && TRANSPARENT_HUGEPAGE
+	help
+	  Try to THP-like Hugepages based on ARM64 cont-pte.
+
+config CONT_PTE_HUGEPAGE_ON_EXT4
+	bool "Cont Pte Hugepage support on EXT4"
+	default n
+	depends on CONT_PTE_HUGEPAGE
+	help
+	  Try to THP-like Hugepages based on ARM64 cont-pte on ext4
+
+config CONT_PTE_HUGEPAGE_ON_QEMU
+	bool "Cont Pte Hugepage support on QEMU"
+	default n
+	depends on CONT_PTE_HUGEPAGE
+	help
+	  QEMU debugging of ContPte hugepage
+
+config CONT_PTE_HUGEPAGE_64K_ZRAM
+	bool "Cont Pte Hugepage support 64K ZRAM"
+	default y
+	depends on CONT_PTE_HUGEPAGE
+	help
+	  Cont Pte Hugepage support 64K ZRAM
+
 config LOCK_MM_AND_FIND_VMA
 	bool
 	depends on !STACK_GROWSUP
 
 source "mm/damon/Kconfig"
+source "mm/mm_osvelte/Kconfig"
+
+#ifdef OPLUS_FEATURE_MM
+config OPLUS_FEATURE_UXMEM_OPT
+	tristate "enable uxmem_opt"
+	default y
+	help
+	  This feature add a memory pool for ux process.
+
+config OPLUS_FEATURE_DYNAMIC_READAHEAD
+	tristate "dynamic pagecache readahead"
+	default y
+	depends on OPLUS_FEATURE_UXMEM_OPT
+	help
+	  This driver used for dynamically tuning filemap readahead for performance.
+#endif
 
 endmenu

@@ -47,6 +47,10 @@
 
 static inline bool arch_thp_swp_supported(void)
 {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/* even we have MTE, we don't use MTE */
+	return true;
+#endif
 	return !system_supports_mte();
 }
 #define arch_thp_swp_supported arch_thp_swp_supported
@@ -887,6 +891,15 @@ static inline int __ptep_test_and_clear_young(pte_t *ptep)
 	pte = READ_ONCE(*ptep);
 	do {
 		old_pte = pte;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		/*
+		 * we have seen a swapentry's bit3, which is AF bit(10) in pte,
+		 * is incorrectly cleared. This sets swapoffset to 0-1-2-3-0-1
+		 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
+		 */
+		if (WARN_ON(!pte_present(pte)))
+			return false;
+#endif
 		pte = pte_mkold(pte);
 		pte_val(pte) = cmpxchg_relaxed(&pte_val(*ptep),
 					       pte_val(old_pte), pte_val(pte));

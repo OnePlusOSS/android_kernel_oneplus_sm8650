@@ -1005,6 +1005,36 @@ static inline vm_fault_t folio_lock_or_retry(struct folio *folio,
 	return 0;
 }
 
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+static inline vm_fault_t lock_nr_folios_or_retry(struct folio **folio, struct vm_fault *vmf,
+		int nr)
+{
+	int i;
+	vm_fault_t ret = 0;
+
+	might_sleep();
+
+	for (i = 0; i < nr; i++) {
+		if (folio_trylock(folio[i]))
+			continue;
+
+		ret = __folio_lock_or_retry(folio[i], vmf);
+		if (ret)
+			break;
+	}
+
+	if (ret && i) {
+		for (i--; i >= 0; i--) {
+			CHP_BUG_ON(!folio_test_locked(folio[i]));
+			folio_unlock(folio[i]);
+		}
+		return ret;
+	}
+
+	return 0;
+}
+#endif
 /*
  * This is exported only for folio_wait_locked/folio_wait_writeback, etc.,
  * and should not be used directly.

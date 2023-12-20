@@ -484,7 +484,11 @@ int swap_readpage(struct page *page, bool synchronous,
 	if (sis->flags & SWP_SYNCHRONOUS_IO) {
 		ret = bdev_read_page(sis->bdev, swap_page_sector(page), page);
 		if (!ret) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			count_vm_events(PSWPIN, chp_swapin_nr_pages(page));
+#else
 			count_vm_event(PSWPIN);
+#endif
 			goto out;
 		}
 	}
@@ -502,7 +506,11 @@ int swap_readpage(struct page *page, bool synchronous,
 		get_task_struct(current);
 		bio->bi_private = current;
 	}
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	count_vm_events(PSWPIN, thp_nr_pages(page));
+#else
 	count_vm_event(PSWPIN);
+#endif
 	bio_get(bio);
 	submit_bio(bio);
 	while (synchronous) {

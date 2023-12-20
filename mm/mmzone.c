@@ -118,3 +118,10 @@ enum zone_type gfp_zone(gfp_t flags)
 
 	return __gfp_zone(flags);
 }
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+struct ext_free_area ext_free_area[MAX_ORDER];
+unsigned long ext_mt_order3_nr_early;
+unsigned long ext_mt_order3_nr_later;
+unsigned long ext_mt_order4_nr_free;
+#endif

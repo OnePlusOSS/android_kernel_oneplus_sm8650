@@ -594,6 +594,18 @@ bool cma_release(struct cma *cma, const struct page *pages,
 	VM_BUG_ON(pfn + count > cma->base_pfn + cma->count);
 
 	free_contig_range(pfn, count);
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (PageContRefill(pages)) {
+		CHP_BUG_ON(!IS_ALIGNED(pfn, HPAGE_CONT_PTE_NR));
+		CHP_BUG_ON(count != HPAGE_CONT_PTE_NR);
+		if (TestClearPageContExtAlloc((struct page *)pages))
+			count_vm_chp_event(CHP_REFILL_EXTALLOC);
+		cont_pte_pool_add((struct page *)pages);
+		return true;
+	}
+#endif
+
 	cma_clear_bitmap(cma, pfn, count);
 	trace_cma_release(cma->name, pfn, pages, count);
 

@@ -1306,6 +1306,11 @@ static bool suitable_migration_target(struct compact_control *cc,
 			return false;
 	}
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (is_migrate_ext(get_pageblock_migratetype(page)))
+		return false;
+#endif
+
 	if (cc->ignore_block_suitable)
 		return true;
 

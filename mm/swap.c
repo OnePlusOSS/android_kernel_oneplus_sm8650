@@ -115,6 +115,11 @@ static void __folio_put_large(struct folio *folio)
 	 */
 	if (!folio_test_hugetlb(folio))
 		__page_cache_release(folio);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	CHP_BUG_ON(PageCont(folio_page(folio, 0)) &&
+		   !PageError(folio_page(folio, 0)) &&
+		   !PageUptodate(folio_page(folio, 0)));
+#endif
 	destroy_large_folio(folio);
 }
 

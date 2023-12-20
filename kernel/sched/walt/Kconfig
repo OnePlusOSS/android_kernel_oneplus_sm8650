@@ -39,3 +39,9 @@ config SCHED_CONSERVATIVE_BOOST_LPM_BIAS
 	  will not enter low power mode for a hysteresis time period,
 	  which can be configured from userspace.
 endmenu
+
+config OPLUS_FEATURE_SUGOV_TL
+	bool "use target loads in walt governor"
+	depends on SCHED_WALT
+	help
+	  Add target_loads sysfs attr in cpufreq walt governor.

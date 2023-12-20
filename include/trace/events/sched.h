@@ -214,11 +214,35 @@ static inline long __trace_sched_switch_state(bool preempt,
 
 	return state ? (1 << (state - 1)) : state;
 }
-#endif /* CREATE_TRACE_POINTS */
+//#ifdef CONFIG_OPLUS_SCHED_SWTICH_DEBUG
+#define PRIO_MAX_TASK_PRIO 1000
+#define PRIO_MAX_CPUCTL 29
+#define PRIO_MAX_CPUSET 100
 
 /*
  * Tracepoint for task switches, performed by the scheduler:
  */
+static int get_compound_prio(struct task_struct *p)
+{
+	struct css_set *cset;
+	int prio, cpu_cid, cpuset_cid;
+	prio = p->prio;
+
+	cset = task_css_set(p);
+	cpu_cid = cset->subsys[cpu_cgrp_id] ? cset->subsys[cpu_cgrp_id]->id : 0;
+	cpuset_cid = cset->subsys[cpuset_cgrp_id] ? cset->subsys[cpuset_cgrp_id]->id : 0;
+	if (cpu_cid >= PRIO_MAX_CPUCTL)
+		cpu_cid = 0;
+	if (cpuset_cid >= PRIO_MAX_CPUSET)
+		cpuset_cid = 0;
+
+	prio += cpuset_cid * PRIO_MAX_TASK_PRIO;
+	prio += cpu_cid * PRIO_MAX_TASK_PRIO * PRIO_MAX_CPUSET;
+	prio += (int)((u8)cpumask_bits(&p->cpus_mask)[0]) * PRIO_MAX_TASK_PRIO * PRIO_MAX_CPUCTL * PRIO_MAX_CPUSET;
+	return prio;
+}
+#endif /* CREATE_TRACE_POINTS */
+
 TRACE_EVENT(sched_switch,
 
 	TP_PROTO(bool preempt,
@@ -245,7 +269,8 @@ TRACE_EVENT(sched_switch,
 		__entry->prev_state	= __trace_sched_switch_state(preempt, prev_state, prev);
 		memcpy(__entry->prev_comm, prev->comm, TASK_COMM_LEN);
 		__entry->next_pid	= next->pid;
-		__entry->next_prio	= next->prio;
+//#ifdef CONFIG_OPLUS_SCHED_SWTICH_DEBUG
+		__entry->next_prio	= get_compound_prio(next);
 		/* XXX SCHED_DEADLINE */
 	),
 

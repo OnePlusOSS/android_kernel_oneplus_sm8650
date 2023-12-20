@@ -5052,6 +5052,8 @@ static U64 ZSTD_getCParamRowSize(U64 srcSizeHint, size_t dictSize, ZSTD_cParamMo
  *  Note: srcSizeHint 0 means 0, use ZSTD_CONTENTSIZE_UNKNOWN for unknown.
  *        Use dictSize == 0 for unknown or unused.
  *  Note: `mode` controls how we treat the `dictSize`. See docs for `ZSTD_cParamMode_e`. */
+
+
 static ZSTD_compressionParameters ZSTD_getCParams_internal(int compressionLevel, unsigned long long srcSizeHint, size_t dictSize, ZSTD_cParamMode_e mode)
 {
     U64 const rSize = ZSTD_getCParamRowSize(srcSizeHint, dictSize, mode);
@@ -5066,6 +5068,15 @@ static ZSTD_compressionParameters ZSTD_getCParams_internal(int compressionLevel,
     else row = compressionLevel;
 
     {   ZSTD_compressionParameters cp = ZSTD_defaultCParameters[tableID][row];
+#ifdef DSLAB_OPTIMIZE_COMPRESS
+        // 自动根据L1DCache的大小设置hashlog和chainlog的值
+        if (cp.hashLog > DSLAB_L1DCACHE_LOG - 4){
+            cp.hashLog = DSLAB_L1DCACHE_LOG - 4;
+        }
+        if (cp.chainLog >= cp.hashLog){
+            cp.chainLog = cp.hashLog - 1;
+        }
+#endif
         /* acceleration factor */
         if (compressionLevel < 0) {
             int const clampedCompressionLevel = MAX(ZSTD_minCLevel(), compressionLevel);
@@ -5075,7 +5086,6 @@ static ZSTD_compressionParameters ZSTD_getCParams_internal(int compressionLevel,
         return ZSTD_adjustCParams_internal(cp, srcSizeHint, dictSize, mode);
     }
 }
-
 /*! ZSTD_getCParams() :
  * @return ZSTD_compressionParameters structure for a selected compression level, srcSize and dictSize.
  *  Size values are optional, provide 0 if not known or unused */

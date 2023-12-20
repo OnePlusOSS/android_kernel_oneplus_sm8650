@@ -118,6 +118,10 @@ struct eusb2_repeater {
 	u32			*host_param_override_seq;
 	u8			param_override_seq_cnt;
 	u8			host_param_override_seq_cnt;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	u32			*param_override_seq_host;
+	u8			param_override_seq_cnt_host;
+#endif
 };
 
 /* Perform one or more register read */
@@ -335,6 +339,18 @@ static int eusb2_repeater_init(struct usb_repeater *ur)
 			container_of(ur, struct eusb2_repeater, ur);
 	unsigned int rptr_init_cnt = INIT_MAX_CNT;
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	if ((ur->flags & PHY_HOST_MODE) && er->param_override_seq_host) {
+		eusb2_repeater_update_seq(er, er->param_override_seq_host,
+				er->param_override_seq_cnt_host);
+		dev_err(er->ur.dev, "Using host eye-diagram parameters!\n");
+	} else if (er->param_override_seq) {
+	/* override init sequence using devicetree based values */
+		eusb2_repeater_update_seq(er, er->param_override_seq,
+				er->param_override_seq_cnt);
+		dev_err(er->ur.dev, "Using device eye-diagram parameters!\n");
+	}
+#else
 	/* override init sequence using devicetree based values */
 	eusb2_repeater_update_seq(er, er->param_override_seq,
 			er->param_override_seq_cnt);
@@ -342,6 +358,7 @@ static int eusb2_repeater_init(struct usb_repeater *ur)
 	if (ur->flags & PHY_HOST_MODE)
 		eusb2_repeater_update_seq(er, er->host_param_override_seq,
 				er->host_param_override_seq_cnt);
+#endif
 
 	/* override tune params using debugfs based values */
 	if (er->usb2_crossover <= 0x7)
@@ -532,6 +549,13 @@ static int eusb2_repeater_probe(struct platform_device *pdev)
 			&er->host_param_override_seq, &er->host_param_override_seq_cnt);
 	if (ret < 0)
 		goto err_probe;
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	ret = eusb2_repeater_read_overrides(dev, "qcom,param-override-seq-host",
+			&er->param_override_seq_host, &er->param_override_seq_cnt_host);
+	if (ret < 0)
+		goto err_probe;
+#endif
 
 	er->ur.dev = dev;
 	platform_set_drvdata(pdev, er);

@@ -273,6 +273,12 @@ void free_swap_slot(swp_entry_t entry)
 {
 	struct swap_slots_cache *cache;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/* othereise, basepages can get hugepages' zRAM */
+	if (is_thp_swap(swp_swap_info(entry)))
+		goto direct_free;
+#endif
+
 	cache = raw_cpu_ptr(&swp_slots);
 	if (likely(use_swap_slot_cache && cache->slots_ret)) {
 		spin_lock_irq(&cache->free_lock);
@@ -307,8 +313,13 @@ swp_entry_t folio_alloc_swap(struct folio *folio)
 	entry.val = 0;
 
 	if (folio_test_large(folio)) {
-		if (IS_ENABLED(CONFIG_THP_SWAP) && arch_thp_swp_supported())
+		if (IS_ENABLED(CONFIG_THP_SWAP) && arch_thp_swp_supported()) {
 			get_swap_pages(1, &entry, folio_nr_pages(folio));
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			/* TODO remove in the future */
+			CHP_BUG_ON(entry.val && !is_thp_swap(swp_swap_info(entry)));
+#endif
+		}
 		goto out;
 	}
 

@@ -88,6 +88,7 @@
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 
+
 #include "pgalloc-track.h"
 #include "internal.h"
 #include "swap.h"
@@ -989,6 +990,16 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	 */
 	if (vm_flags & VM_SHARED)
 		pte = pte_mkclean(pte);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/*
+	 * we have seen a swapentry's bit3, which is AF bit(10) in pte,
+	 * is incorrectly cleared. This sets swapoffset to 0-1-2-3-0-1
+	 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
+	 */
+	if (!pte_present(pte))
+		UNALIGNED_CONT_PTE_WARN(1);
+	else
+#endif
 	pte = pte_mkold(pte);
 
 	if (!userfaultfd_wp(dst_vma))
@@ -997,6 +1008,75 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
 	return 0;
 }
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+static inline int
+copy_present_cont_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+		 pte_t *dst_pte, pte_t *src_pte, unsigned long addr, int *rss,
+		 struct page **prealloc)
+{
+	struct mm_struct *src_mm = src_vma->vm_mm;
+	unsigned long vm_flags = src_vma->vm_flags;
+	pte_t pte = *src_pte;
+	struct page *page;
+
+	page = vm_normal_page(src_vma, addr, pte);
+	if (page && is_huge_zero_page(page)) {
+		mm_get_huge_zero_page(dst_vma->vm_mm);
+		goto out_zero_page;
+	} else if (page && PageAnon(page)) {
+		get_page(page);
+		if (unlikely(page_try_dup_anon_rmap(page, true, src_vma))) {
+			/* Page maybe pinned, we have to copy. */
+			put_page(page);
+			pr_debug("\n\nFIXME: %s:%d mm:%lx page:%lx compound_mapcount:%d \n",
+					__func__, __LINE__, (unsigned long)src_mm, (unsigned long)page,
+					compound_mapcount(page));
+			return -EAGAIN;
+		}
+		rss[mm_counter(page)] += HPAGE_CONT_PTE_NR;
+	} else if (page) {
+		get_page(page);
+		page_dup_file_rmap(page, true);
+		rss[mm_counter(page)] += HPAGE_CONT_PTE_NR;
+	}
+
+out_zero_page:
+	/*
+	 * If it's a COW mapping, write protect it both
+	 * in the parent and the child
+	 */
+	if (is_cow_mapping(vm_flags) && pte_write(pte)) {
+		cont_pte_set_huge_pte_wrprotect(src_mm, addr, src_pte);
+		pte = pte_wrprotect(pte);
+	}
+
+	/*
+	 * If it's a shared mapping, mark it clean in
+	 * the child
+	 */
+	if (vm_flags & VM_SHARED)
+		pte = pte_mkclean(pte);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/*
+	 * we have seen a swapentry's bit3, which is AF bit(10) in pte,
+	 * is incorrectly cleared. This sets swapoffset to 0-1-2-3-0-1
+	 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
+	 */
+	if (!pte_present(pte))
+		UNALIGNED_CONT_PTE_WARN(1);
+	else
+#endif
+	pte = pte_mkold(pte);
+
+	if (!userfaultfd_wp(dst_vma))
+		pte = pte_clear_uffd_wp(pte);
+
+	cont_pte_set_huge_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
+	return 0;
+}
+#endif
+
 
 static inline struct page *
 page_copy_prealloc(struct mm_struct *src_mm, struct vm_area_struct *vma,
@@ -1031,6 +1111,9 @@ copy_pte_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	int rss[NR_MM_COUNTERS];
 	swp_entry_t entry = (swp_entry_t){0};
 	struct page *prealloc = NULL;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	unsigned long next;
+#endif
 
 again:
 	progress = 0;
@@ -1055,6 +1138,16 @@ again:
 		 */
 		if (progress >= 32) {
 			progress = 0;
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			/*
+			 * XXX: don't release ptl at an unligned address as cont_pte might form while
+			 * ptl is released, this causes double-map
+			 */
+			if (!vma_is_chp_anonymous(src_vma) ||
+			    (vma_is_chp_anonymous(src_vma) && IS_ALIGNED(addr, HPAGE_CONT_PTE_SIZE)))
+#endif
+
 			if (need_resched() ||
 			    spin_needbreak(src_ptl) || spin_needbreak(dst_ptl))
 				break;
@@ -1084,8 +1177,31 @@ again:
 			 */
 			WARN_ON_ONCE(ret != -ENOENT);
 		}
-		/* copy_present_pte() will clear `*prealloc' if consumed */
-		ret = copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (pte_cont(*src_pte)) {
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+			check_cont_pte_trans_huge(src_pte, CORRUPT_CONT_PTE_REASON_CP_PTE_RANGE1);
+#endif
+			next = pte_cont_addr_end(addr, end);
+			if (unlikely(next - addr != HPAGE_CONT_PTE_SIZE)) {
+				atomic64_inc(&perf_stat.cp_cont_pte_split_count);
+				pr_alert("%s @FIXME: CHP: unaligned ptes copying, process:%s next:%lu addr:%lu\n",
+					__func__, current->group_leader ? current->group_leader->comm : "UNKNOWN",
+					next, addr);
+				ret = -EAGAIN;
+				CHP_BUG_ON(1); /* should never happen as we did XXX, but who knows ? */
+			} else {
+				ret = copy_present_cont_pte(dst_vma, src_vma, dst_pte, src_pte,
+						addr, rss, &prealloc);
+			}
+			if (unlikely(ret == -EAGAIN)) {
+				atomic64_inc(&perf_stat.cp_cont_pte_split_count);
+				__split_huge_cont_pte_double_ptl(src_vma, src_pte, addr, false, NULL, src_ptl, dst_ptl);
+			}
+		} else
+#endif
+			/* copy_present_pte() will clear `*prealloc' if consumed */
+			ret = copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
 				       addr, rss, &prealloc);
 		/*
 		 * If we need a pre-allocated page for this pte, drop the
@@ -1104,6 +1220,17 @@ again:
 			prealloc = NULL;
 		}
 		progress += 8;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+                if (pte_cont(*src_pte)) {
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+			check_cont_pte_trans_huge(src_pte, CORRUPT_CONT_PTE_REASON_CP_PTE_RANGE2);
+#endif
+                        /* "do while()" will do "dst_pte++", "src_pte++" and "addr + PAGE_SIZE" */
+                        dst_pte += HPAGE_CONT_PTE_NR - 1;
+                        src_pte += HPAGE_CONT_PTE_NR - 1;
+                        addr += HPAGE_CONT_PTE_SIZE - PAGE_SIZE;
+                }
+#endif
 	} while (dst_pte++, src_pte++, addr += PAGE_SIZE, addr != end);
 
 	arch_leave_lazy_mmu_mode();
@@ -1415,6 +1542,9 @@ again:
 	pte = start_pte;
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+again_pte:
+#endif
 	do {
 		pte_t ptent = *pte;
 		struct page *page;
@@ -1429,6 +1559,48 @@ again:
 			page = vm_normal_page(vma, addr, ptent);
 			if (unlikely(!should_zap_page(details, page)))
 				continue;
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			if (pte_cont(ptent)) {
+				unsigned long next = pte_cont_addr_end(addr, end);
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+				check_cont_pte_trans_huge(pte, CORRUPT_CONT_PTE_REASON_ZAP_PTE_RANGE);
+#endif
+
+				if (next - addr != HPAGE_CONT_PTE_SIZE) {
+					__split_huge_cont_pte(vma, pte, addr, false, NULL, ptl);
+					/*
+					 * After splitting cont-pte
+					 * we need to process pte again.
+					 */
+					goto again_pte;
+				} else {
+					cont_pte_huge_ptep_get_and_clear(mm, addr, pte);
+
+					tlb_remove_cont_pte_tlb_entry(tlb, pte, addr);
+					if (unlikely(!page))
+						continue;
+
+					if (!is_huge_zero_page(page)) {
+						rss[mm_counter(page)] -= HPAGE_CONT_PTE_NR;
+						page_remove_rmap(page, vma, true);
+						if (unlikely(page_mapcount(page) < 0))
+							print_bad_pte(vma, addr, ptent, page);
+					}
+
+					if (__tlb_remove_page_size(tlb, page, HPAGE_CONT_PTE_SIZE)) {
+						force_flush = 1;
+						addr = next;
+						break;
+					}
+				}
+
+				/* "do while()" will do "pte++" and "addr + PAGE_SIZE" */
+				pte += (next - PAGE_SIZE - addr)/PAGE_SIZE;
+				addr = next - PAGE_SIZE;
+				continue;
+			}
+#endif
 			ptent = ptep_get_and_clear_full(mm, addr, pte,
 							tlb->fullmm);
 			tlb_remove_tlb_entry(tlb, pte, addr);
@@ -2869,6 +3041,10 @@ static inline int __wp_page_copy_user(struct page *dst, struct page *src,
 	unsigned long addr = vmf->address;
 
 	if (likely(src)) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (ContPteHugePage(src) && ContPteHugePage(dst))
+			return cow_cont_pte_user_page(dst, src, vmf);
+#endif
 		if (copy_mc_user_highpage(dst, src, addr, vma)) {
 			memory_failure_queue(page_to_pfn(src), 0);
 			return -EHWPOISON;
@@ -3116,6 +3292,11 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	pte_t entry;
 	int page_copied = 0;
 	struct mmu_notifier_range range;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	unsigned long haddr = vmf->address & HPAGE_CONT_PTE_MASK;
+	struct page *basepages[HPAGE_CONT_PTE_NR] = {NULL, };
+	int i;
+#endif
 	int ret;
 
 	delayacct_wpcopy_start();
@@ -3128,11 +3309,75 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 							      vmf->address);
 		if (!new_page)
 			goto oom;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		CHP_BUG_ON(PageCont(new_page));
+		CHP_BUG_ON(PageContRefill(new_page));
+#endif
 	} else {
-		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
-				vmf->address);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (pte_cont(vmf->orig_pte)) {
+			gfp_t gfp_mask = (GFP_TRANSHUGE_LIGHT | __GFP_KSWAPD_RECLAIM) & ~__GFP_MOVABLE & ~__GFP_COMP;
+			old_page = compound_head(old_page);
+			if (is_huge_zero_page(old_page))
+				gfp_mask |= __GFP_ZERO;
+			/* for GUP unshare, use base pages and totally drop cont_pte hugepage */
+			if (!unshare)
+				new_page = alloc_cont_pte_hugepage(gfp_mask);
+			if (new_page) {
+				for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+					SetPageCont(&new_page[i]);
+				prep_compound_page(new_page, HPAGE_CONT_PTE_ORDER);
+				prep_transhuge_page(new_page);
+				/*
+				 * 5.10 set subpages' refcount to 0 in prep_compound_page,
+				 * but 6.1 doesn't
+				 */
+				for (i = 1; i < HPAGE_CONT_PTE_NR; i++)
+					page_ref_add_unless(&new_page[i], -1, 0);
+
+				if (is_huge_zero_page(old_page))
+					goto no_copy;
+			} else {
+				int nr_populated;
+				/* copy huge page to 16 basepages */
+				nr_populated = alloc_pages_bulk_array(GFP_HIGHUSER_MOVABLE, HPAGE_CONT_PTE_NR, basepages);
+
+				/* when bulk alloc failed, continue alloc_page_vma */
+				if (nr_populated != HPAGE_CONT_PTE_NR) {
+					for (i = nr_populated; i < HPAGE_CONT_PTE_NR; i++) {
+						basepages[i] = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vmf->address);
+						if (!basepages[i]) {
+							if (i) {
+								for (i--; i >= 0; i--)
+									put_page(basepages[i]);
+							}
+
+							goto oom;
+						}
+					}
+				}
+			}
+		} else
+#endif
+			new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
+					vmf->address);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (!new_page && !basepages[0])
+			goto oom;
+		if (basepages[0]) {
+			for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+				copy_user_highpage(basepages[i], old_page + i, haddr + PAGE_SIZE, vmf->vma);
+				if (mem_cgroup_charge(page_folio(basepages[i]), mm, GFP_KERNEL))
+					goto oom_free_new;
+				cgroup_throttle_swaprate(basepages[i], GFP_KERNEL);
+				__SetPageUptodate(basepages[i]);
+			}
+			goto copy_done;
+		}
+#else
 		if (!new_page)
 			goto oom;
+#endif
 
 		ret = __wp_page_copy_user(new_page, old_page, vmf);
 		if (ret) {
@@ -3153,13 +3398,26 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		kmsan_copy_page_meta(new_page, old_page);
 	}
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+no_copy:
+#endif
 	if (mem_cgroup_charge(page_folio(new_page), mm, GFP_KERNEL))
 		goto oom_free_new;
 	cgroup_throttle_swaprate(new_page, GFP_KERNEL);
 
 	__SetPageUptodate(new_page);
 
-	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+copy_done:
+#endif
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (pte_cont(vmf->orig_pte))
+		mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
+				haddr, haddr + HPAGE_CONT_PTE_SIZE);
+	else
+#endif
+		mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
 				vmf->address & PAGE_MASK,
 				(vmf->address & PAGE_MASK) + PAGE_SIZE);
 	mmu_notifier_invalidate_range_start(&range);
@@ -3168,16 +3426,94 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	 * Re-check the pte - we dropped the lock
 	 */
 	vmf->pte = pte_offset_map_lock(mm, vmf->pmd, vmf->address, &vmf->ptl);
-	if (likely(pte_same(*vmf->pte, vmf->orig_pte))) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+	check_cont_pte_trans_huge(vmf->pte, CORRUPT_CONT_PTE_REASON_WP_PAGE_CP1);
+#endif
+	if (likely(pte_same(*vmf->pte, vmf->orig_pte) && !pte_cont(vmf->orig_pte)) ||
+			(pte_cont(vmf->orig_pte) && cont_pte_readonly(vmf))) {
+#else
+		if (likely(pte_same(*vmf->pte, vmf->orig_pte))) {
+#endif
 		if (old_page) {
 			if (!PageAnon(old_page)) {
-				dec_mm_counter_fast(mm,
-						mm_counter_file(old_page));
-				inc_mm_counter_fast(mm, MM_ANONPAGES);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+				if (!pte_cont(vmf->orig_pte)) {
+#endif
+					dec_mm_counter_fast(mm,
+							mm_counter_file(old_page));
+					inc_mm_counter_fast(mm, MM_ANONPAGES);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+				} else {
+					/* FIXME: file hugepage cow?*/
+					CHP_BUG_ON(!is_huge_zero_page(old_page));
+
+					if (!is_huge_zero_page(old_page))
+						add_mm_counter_fast(mm, mm_counter_file(old_page), -HPAGE_CONT_PTE_NR);
+					add_mm_counter_fast(mm, MM_ANONPAGES, HPAGE_CONT_PTE_NR);
+				}
+#endif
 			}
 		} else {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			/* cont pte should be only on data */
+			CHP_BUG_ON(pte_cont(vmf->orig_pte));
+#endif
 			inc_mm_counter_fast(mm, MM_ANONPAGES);
 		}
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (pte_cont(vmf->orig_pte)) {
+			pte_t *ptep = vmf->pte - (vmf->address - haddr)/PAGE_SIZE;
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+			check_cont_pte_trans_huge(vmf->pte, CORRUPT_CONT_PTE_REASON_WP_PAGE_CP2);
+#endif
+			for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+				flush_cache_page(vma, haddr + PAGE_SIZE * i,
+						pte_pfn(vmf->orig_pte) - (vmf->address - haddr)/PAGE_SIZE + i);
+			}
+			if (new_page) {
+				entry = mk_pte(new_page, vma->vm_page_prot);
+				entry = pte_sw_mkyoung(entry);
+				if (unlikely(unshare)) {
+					if (pte_soft_dirty(vmf->orig_pte))
+						entry = pte_mksoft_dirty(entry);
+					if (pte_uffd_wp(vmf->orig_pte))
+						entry = pte_mkuffd_wp(entry);
+				} else {
+					entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+				}
+				entry = pte_mkcont(entry);
+				CHP_BUG_ON(unshare && pte_write(entry));
+				cont_pte_set_huge_pte_at(vma->vm_mm, haddr, ptep, entry);
+				page_add_new_anon_rmap(new_page, vma, haddr);
+				lru_cache_add_inactive_or_unevictable(new_page, vma);
+				atomic64_inc(&thp_cow);
+			} else {
+				for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+					entry = mk_pte(basepages[i], vma->vm_page_prot);
+					entry = pte_sw_mkyoung(entry);
+					if (unlikely(unshare)) {
+						if (pte_soft_dirty(vmf->orig_pte))
+							entry = pte_mksoft_dirty(entry);
+						if (pte_uffd_wp(vmf->orig_pte))
+							entry = pte_mkuffd_wp(entry);
+					} else {
+						entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+					}
+					ptep_clear_flush_notify(vma, (haddr + PAGE_SIZE * i), ptep + i);
+					page_add_new_anon_rmap(basepages[i], vma, haddr + PAGE_SIZE * i);
+					lru_cache_add_inactive_or_unevictable(basepages[i], vma);
+					CHP_BUG_ON(unshare && pte_write(entry));
+					set_pte_at_notify(mm, haddr + PAGE_SIZE * i, ptep + i, entry);
+				}
+				if (likely(!unshare))
+					atomic64_inc(&thp_cow_fallback);
+			}
+			goto done_pte_update;
+		}
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+
 		flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		entry = pte_sw_mkyoung(entry);
@@ -3208,6 +3544,10 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		BUG_ON(unshare && pte_write(entry));
 		set_pte_at_notify(mm, vmf->address, vmf->pte, entry);
 		update_mmu_cache(vma, vmf->address, vmf->pte);
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+done_pte_update:
+#endif
 		if (old_page) {
 			/*
 			 * Only after switching the pte to the new page may
@@ -3231,7 +3571,15 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			 * mapcount is visible. So transitively, TLBs to
 			 * old page will be flushed before it can be reused.
 			 */
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			/*
+			 * NOTE: huge_zero_page does not operate mapcount!
+			 */
+			if (!is_huge_zero_page(old_page))
+				page_remove_rmap(old_page, vma, pte_cont(vmf->orig_pte));
+#else
 			page_remove_rmap(old_page, vma, false);
+#endif
 		}
 
 		/* Free the old page.. */
@@ -3241,16 +3589,39 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		update_mmu_tlb(vma, vmf->address, vmf->pte);
 	}
 
+	/*
+	 * 1.if cow, put old_page.
+	 * 2.if !pte_same, put alloc new_page.
+	 */
 	if (new_page)
 		put_page(new_page);
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/*
+	 * if !pte_same and fallback alloc,
+	 * put HPAGE_CONT_PTE_NR basepages.
+	 */
+	if (!page_copied && basepages[0]) {
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+			put_page(basepages[i]);
+	}
+#endif
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
 	/*
 	 * No need to double call mmu_notifier->invalidate_range() callback as
 	 * the above ptep_clear_flush_notify() did already call it.
 	 */
 	mmu_notifier_invalidate_range_only_end(&range);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/*
+	 * NOTE: huge_zero_page does not increase the page refcount during mapping,
+	 * so we cannot decrement its refcount here, otherwise it will be released
+	 * to buddy!
+	 */
+	if (old_page && !is_huge_zero_page(old_page)) {
+#else
 	if (old_page) {
+#endif
 		if (page_copied)
 			free_swap_cache(old_page);
 		put_page(old_page);
@@ -3259,6 +3630,13 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	delayacct_wpcopy_end();
 	return (page_copied && !unshare) ? VM_FAULT_WRITE : 0;
 oom_free_new:
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (basepages[0]) {
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+			put_page(basepages[i]);
+		goto oom;
+	}
+#endif
 	put_page(new_page);
 oom:
 	if (old_page)
@@ -3369,6 +3747,90 @@ static vm_fault_t wp_page_shared(struct vm_fault *vmf)
 	return ret;
 }
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+static bool wp_cont_pte_hugepage_reuse(struct vm_fault *vmf)
+{
+	const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
+	struct page *head = compound_head(vmf->page);
+	unsigned long haddr = vmf->address & HPAGE_CONT_PTE_MASK;
+	pte_t *ptep = vmf->pte - (vmf->address - haddr)/PAGE_SIZE;
+	struct folio *folio = page_folio(head);
+
+	WARN_ON(PageKsm(head));
+
+	/* we don't support rd-only reuse CHP, always make 16 rd-only basepage copies */
+	if (unshare)
+		return false;
+
+	/* Early check when only holding the PT lock. */
+	if (PageAnonExclusive(head))
+		goto reuse;
+
+	if (!folio_trylock(folio)) {
+		folio_get(folio);
+		spin_unlock(vmf->ptl);
+		folio_lock(folio);
+		spin_lock(vmf->ptl);
+		if (unlikely(!pte_same(*vmf->pte, vmf->orig_pte)) || !cont_pte_readonly(vmf)) {
+			/*
+			 * don't spin_unlock, we'll do it
+			 * in the return.
+			 */
+			folio_unlock(folio);
+			folio_put(folio);
+			return false;
+		}
+		folio_put(folio);
+	}
+
+	/* Recheck after temporarily dropping the PT lock. */
+	if (PageAnonExclusive(head)) {
+		folio_unlock(folio);
+		goto reuse;
+	}
+
+	/*
+	 * See do_wp_page(): we can only reuse the folio exclusively if
+	 * there are no additional references. Note that we always drain
+	 * the LRU pagevecs immediately after adding a THP.
+	 */
+	if (folio_ref_count(folio) >
+			1 + folio_test_swapcache(folio) * folio_nr_pages(folio))
+		goto unlock;
+	if (!cont_pte_readonly(vmf))
+		goto unlock;
+
+	if (folio_test_swapcache(folio))
+		folio_free_swap(folio);
+	if (folio_ref_count(folio) == 1) {
+		pte_t entry;
+
+		page_move_anon_rmap(head, vmf->vma);
+		folio_unlock(folio);
+reuse:
+		/* this is not going to happen as we did XXX above */
+		CHP_BUG_ON(!cont_pte_readonly(vmf));
+
+		entry = pte_mkyoung(ptep_get(ptep));
+		entry = maybe_mkwrite(pte_mkdirty(entry), vmf->vma);
+		cont_pte_huge_ptep_get_and_clear(vmf->vma->vm_mm, haddr, ptep);
+		cont_pte_set_huge_pte_at(vmf->vma->vm_mm, haddr, ptep, entry);
+
+		count_vm_event(PGREUSE);
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+		return true;
+	}
+
+unlock:
+	/*
+	 * don't spin_unlock, we'll do it in the return.
+	 */
+	folio_unlock(folio);
+
+	return false;
+}
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+
 /*
  * This routine handles present pages, when
  * * users try to write to a shared page (FAULT_FLAG_WRITE)
@@ -3445,6 +3907,41 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	 */
 	folio = page_folio(vmf->page);
 	if (folio_test_anon(folio)) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		struct page *page = vmf->page;
+		if (ContPteHugePage(page) && pte_cont(vmf->orig_pte)) {
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+			check_cont_pte_trans_huge(vmf->pte, CORRUPT_CONT_PTE_REASON_DO_WP_PAGE);
+#endif
+			if (!wp_cont_pte_hugepage_reuse(vmf)) {
+				bool _pte_same = pte_same(*vmf->pte, vmf->orig_pte);
+				bool _cont_pte_readonly = cont_pte_readonly(vmf);
+				bool _page_count = page_count(page);
+
+				if (unlikely(!_pte_same || !_cont_pte_readonly)) {
+					pte_unmap_unlock(vmf->pte, vmf->ptl);
+
+					atomic64_inc(&perf_stat.wp_reuse_fail_count[WP_REUSE_FAIL_TOTAL]);
+					if (!_pte_same)
+						atomic64_inc(&perf_stat.wp_reuse_fail_count[PTE_NO_SAME]);
+					if (!_cont_pte_readonly)
+						atomic64_inc(&perf_stat.wp_reuse_fail_count[PTE_NO_READONLY]);
+					if (!_page_count)
+						atomic64_inc(&perf_stat.wp_reuse_fail_count[ZERO_REF_COUNT]);
+
+					pr_err_ratelimited("@%s:%d comm:%s pid:%d page:%lx ContPteHugePage:%d "
+							   "within_cont_pte_cma:%d pte_same:%d cont_pte_readonly:%d @\n",
+								__func__, __LINE__, current->comm, current->pid,
+								(unsigned long)page, ContPteHugePage(page),
+								within_cont_pte_cma(page_to_pfn(page)),
+								_pte_same, _cont_pte_readonly);
+					return 0;
+				} else
+					goto copy;
+			}
+			return VM_FAULT_WRITE;
+		}
+#endif
 		/*
 		 * If the page is exclusive to this process we must reuse the
 		 * page without further checks.
@@ -3477,6 +3974,13 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 			folio_unlock(folio);
 			goto copy;
 		}
+		/* avoid the last 4KB to reuse the whole 64KB */
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (ContPteHugeFolio(folio)) {
+			folio_unlock(folio);
+			goto copy;
+		}
+#endif
 		/*
 		 * Ok, we've got the only folio reference from our mapping
 		 * and the folio is locked, it's dark out, and we're wearing
@@ -3503,6 +4007,9 @@ copy:
 	/*
 	 * Ok, we need to copy. Oh, well..
 	 */
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	CHP_BUG_ON(!page_count(vmf->page));
+#endif
 	get_page(vmf->page);
 
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
@@ -3641,6 +4148,567 @@ void unmap_mapping_range(struct address_space *mapping,
 }
 EXPORT_SYMBOL(unmap_mapping_range);
 
+#if defined(CONFIG_CONT_PTE_HUGEPAGE)
+extern int free_swap_slot(swp_entry_t entry);
+
+static inline struct swap_cluster_info *lock_cluster(struct swap_info_struct *si,
+						     unsigned long offset)
+{
+	struct swap_cluster_info *ci;
+
+	ci = si->cluster_info;
+	if (ci) {
+		ci += offset / HPAGE_CONT_PTE_NR;
+		spin_lock(&ci->lock);
+	}
+	return ci;
+}
+
+static inline void unlock_cluster(struct swap_cluster_info *ci)
+{
+	if (ci)
+		spin_unlock(&ci->lock);
+}
+
+static inline void __set_cluster_doublemap(struct swap_cluster_info *ci)
+{
+	if (!(ci->flags & (CLUSTER_FLAG_DOUBLE_MAP | CLUSTER_FLAG_FREE))) {
+		ci->flags |= CLUSTER_FLAG_DOUBLE_MAP;
+		swap_cluster_double_mapped++;
+	}
+}
+
+static inline void set_cluster_doublemap(swp_entry_t fault_entry)
+{
+	struct swap_info_struct *si = swp_swap_info(fault_entry);
+	unsigned long offset = swp_offset(fault_entry);
+	struct swap_cluster_info *ci;
+
+	CHP_BUG_ON(!is_thp_swap(si));
+
+	ci = lock_cluster(si, offset);
+	__set_cluster_doublemap(ci);
+	if (ci->flags & CLUSTER_FLAG_FREE)
+		pr_err("@@@FIXME%s-%d %s-%d swapin for free cluster, offs:%lx\n",
+			__func__, __LINE__, current->comm, current->pid, offset);
+	unlock_cluster(ci);
+}
+
+static inline bool is_cont_pte_swap(swp_entry_t fault_entry, pte_t *ptep, swp_entry_t *entries,
+				    struct vm_fault *vmf, bool *pte_changed)
+{
+	int i;
+	struct swap_info_struct *si = swp_swap_info(fault_entry);
+	unsigned long offset = swp_offset(fault_entry);
+	struct swap_cluster_info *ci;
+	bool ret = true;
+
+	if (vmf && pte_changed)
+		*pte_changed = !pte_same(*vmf->pte, vmf->orig_pte);
+
+	if (!is_thp_swap(si) || (pte_changed && *pte_changed))
+		return false;
+
+	ci = lock_cluster(si, offset);
+
+	if (ci->flags & CLUSTER_FLAG_DOUBLE_MAP) {
+		ret = false;
+		goto out;
+	}
+
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+		pte_t pte = READ_ONCE(*(ptep + i));
+
+		if (pte_none(pte) || pte_present(pte)) {
+			ret = false;
+			goto out;
+		}
+
+		entries[i] = pte_to_swp_entry(pte);
+		if (unlikely(non_swap_entry(entries[i]))) {
+			ret = false;
+			goto out;
+		}
+		if (!is_thp_swap(swp_swap_info(entries[i]))) {
+			ret = false;
+			pr_err("@@@@%s-%d current:%s-%d i:%d non-thp-swap\n",
+					__func__, __LINE__, current->comm, current->pid, i);
+			goto out;
+		}
+		if ((swp_offset(entries[i]) % HPAGE_CONT_PTE_NR) != i) {
+			ret = false;
+			pr_err("@@@@%s-%d current:%s-%d-%d i:%d non-aligned-offset:%lx val:%lx prev-val:%lx ptep:%lx ptes:%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx\n",
+					__func__, __LINE__, current->comm, current->pid, current->tgid, i, swp_offset(entries[i]), entries[i].val,
+					i > 0 ? entries[i - 1].val : -1UL,
+					(unsigned long)ptep,
+					(unsigned long long)pte_val(*(ptep + 0)), (unsigned long long)pte_val(*(ptep + 1)), (unsigned long long)pte_val(*(ptep + 2)), (unsigned long long)pte_val(*(ptep + 3)),  (unsigned long long)pte_val(*(ptep + 4)), (unsigned long long)pte_val(*(ptep + 5)), (unsigned long long)pte_val(*(ptep + 6)), (unsigned long long)pte_val(*(ptep + 7)),
+					(unsigned long long)pte_val(*(ptep + 8)), (unsigned long long)pte_val(*(ptep + 9)), (unsigned long long)pte_val(*(ptep + 10)), (unsigned long long)pte_val(*(ptep + 11)),  (unsigned long long)pte_val(*(ptep + 12)), (unsigned long long)pte_val(*(ptep + 13)), (unsigned long long)pte_val(*(ptep + 14)), (unsigned long long)pte_val(*(ptep + 15)));
+			goto out;
+		}
+	}
+out:
+	CHP_BUG_ON(ret && (ci->flags & CLUSTER_FLAG_FREE));
+	unlock_cluster(ci);
+	return ret;
+}
+
+static inline unsigned char swap_count(unsigned char ent)
+{
+	return ent & ~SWAP_HAS_CACHE;
+}
+
+static int cont_pte_swapcache_prepare(swp_entry_t *pentry)
+{
+	struct swap_info_struct *p;
+	struct swap_cluster_info *ci;
+	unsigned long offset;
+	unsigned char count[HPAGE_CONT_PTE_NR];
+	unsigned char has_cache[HPAGE_CONT_PTE_NR];
+	int err = -EINVAL;
+	int i;
+
+	p = get_swap_device(*pentry);
+	if (!p)
+		goto out;
+
+	offset = swp_offset(*pentry);
+
+	CHP_BUG_ON(!IS_ALIGNED(offset, HPAGE_CONT_PTE_NR));
+
+	ci = lock_cluster(p, offset);
+	CHP_BUG_ON(!ci);
+
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+		count[i] = p->swap_map[offset + i];
+
+		/*
+		 * swapin_readahead() doesn't check if a swap entry is valid, so the
+		 * swap entry could be SWAP_MAP_BAD. Check here with lock held.
+		 */
+		if (unlikely(swap_count(count[i]) == SWAP_MAP_BAD)) {
+			err = -ENOENT;
+			goto unlock_out;
+		}
+
+		has_cache[i] = count[i] & SWAP_HAS_CACHE;
+		count[i] &= ~SWAP_HAS_CACHE;
+
+		/* set SWAP_HAS_CACHE if there is no cache and entry is used */
+		if (!has_cache[i] && count[i])
+			has_cache[i] = SWAP_HAS_CACHE;
+		else if (has_cache[i])		/* someone else added cache */
+			has_cache[i] = EEXIST;
+		else {				/* no users remaining */
+			err = -ENOENT;
+			pr_err("@%s:%d comm:%s offset:%lu swap_map[%lu]:0x%02x@ swap_map[%lu]:0x%02x@\n",
+				__func__, __LINE__, current->comm, offset, offset, p->swap_map[offset], offset + i,
+				p->swap_map[offset + i]);
+			goto unlock_out;
+		}
+
+		if (has_cache[i] != has_cache[0]) {
+			pr_err("@%s:%d comm:%s count[%d]:%d has_cache[%d]:%s has_cache[0]:%s "
+			       "offset:%lu swap_map[%lu]:0x%02x@ swap_map[%lu]:0x%02x@\n",
+				__func__, __LINE__, current->comm, i, count[i], i,
+				has_cache[i] == SWAP_HAS_CACHE ? "SWAP_HAS_CACHE" : "EEXIST",
+				has_cache[0] == SWAP_HAS_CACHE ? "SWAP_HAS_CACHE" : "EEXIST",
+				offset, offset, p->swap_map[offset], offset + i, p->swap_map[offset + i]);
+			err = -ENOENT;
+			goto unlock_out;
+		}
+	}
+
+	if (has_cache[0] == SWAP_HAS_CACHE) {
+		err = 0;
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+			WRITE_ONCE(p->swap_map[offset+i], count[i] | SWAP_HAS_CACHE);
+	} else {
+		err = -EEXIST;
+	}
+
+unlock_out:
+	unlock_cluster(ci);
+out:
+	if (p)
+		put_swap_device(p);
+	return err;
+}
+
+/* copied */
+static bool swap_count_continued(struct swap_info_struct *si,
+				 pgoff_t offset, unsigned char count)
+{
+	struct page *head;
+	struct page *page;
+	unsigned char *map;
+	bool ret;
+
+	head = vmalloc_to_page(si->swap_map + offset);
+	if (page_private(head) != SWP_CONTINUED) {
+		CHP_BUG_ON(count & COUNT_CONTINUED);
+		return false;		/* need to add count continuation */
+	}
+
+	spin_lock(&si->cont_lock);
+	offset &= ~PAGE_MASK;
+	page = list_next_entry(head, lru);
+	map = kmap_atomic(page) + offset;
+
+	if (count == SWAP_MAP_MAX)	/* initial increment from swap_map */
+		goto init_map;		/* jump over SWAP_CONT_MAX checks */
+
+	if (count == (SWAP_MAP_MAX | COUNT_CONTINUED)) { /* incrementing */
+		/*
+		 * Think of how you add 1 to 999
+		 */
+		while (*map == (SWAP_CONT_MAX | COUNT_CONTINUED)) {
+			kunmap_atomic(map);
+			page = list_next_entry(page, lru);
+			CHP_BUG_ON(page == head);
+			map = kmap_atomic(page) + offset;
+		}
+		if (*map == SWAP_CONT_MAX) {
+			kunmap_atomic(map);
+			page = list_next_entry(page, lru);
+			if (page == head) {
+				ret = false;	/* add count continuation */
+				goto out;
+			}
+			map = kmap_atomic(page) + offset;
+init_map:		*map = 0;		/* we didn't zero the page */
+		}
+		*map += 1;
+		kunmap_atomic(map);
+		while ((page = list_prev_entry(page, lru)) != head) {
+			map = kmap_atomic(page) + offset;
+			*map = COUNT_CONTINUED;
+			kunmap_atomic(map);
+		}
+		ret = true;			/* incremented */
+
+	} else {				/* decrementing */
+		/*
+		 * Think of how you subtract 1 from 1000
+		 */
+		CHP_BUG_ON(count != COUNT_CONTINUED);
+		while (*map == COUNT_CONTINUED) {
+			kunmap_atomic(map);
+			page = list_next_entry(page, lru);
+			CHP_BUG_ON(page == head);
+			map = kmap_atomic(page) + offset;
+		}
+		CHP_BUG_ON(*map == 0);
+		*map -= 1;
+		if (*map == 0)
+			count = 0;
+		kunmap_atomic(map);
+		while ((page = list_prev_entry(page, lru)) != head) {
+			map = kmap_atomic(page) + offset;
+			*map = SWAP_CONT_MAX | count;
+			count = COUNT_CONTINUED;
+			kunmap_atomic(map);
+		}
+		ret = count == COUNT_CONTINUED;
+	}
+out:
+	spin_unlock(&si->cont_lock);
+	return ret;
+}
+
+/* copied */
+static unsigned char __swap_entry_free_locked(struct swap_info_struct *p,
+					      unsigned long offset,
+					      unsigned char usage)
+{
+	unsigned char count;
+	unsigned char has_cache;
+
+	count = p->swap_map[offset];
+
+	has_cache = count & SWAP_HAS_CACHE;
+	count &= ~SWAP_HAS_CACHE;
+
+	if (usage == SWAP_HAS_CACHE) {
+		VM_BUG_ON(!has_cache);
+		has_cache = 0;
+	} else if (count == SWAP_MAP_SHMEM) {
+		/*
+		 * Or we could insist on shmem.c using a special
+		 * swap_shmem_free() and free_shmem_swap_and_cache()...
+		 */
+		count = 0;
+	} else if ((count & ~COUNT_CONTINUED) <= SWAP_MAP_MAX) {
+		if (count == COUNT_CONTINUED) {
+			if (swap_count_continued(p, offset, count))
+				count = SWAP_MAP_MAX | COUNT_CONTINUED;
+			else
+				count = SWAP_MAP_MAX;
+		} else
+			count--;
+	}
+
+	usage = count | has_cache;
+	if (usage)
+		WRITE_ONCE(p->swap_map[offset], usage);
+	else
+		WRITE_ONCE(p->swap_map[offset], SWAP_HAS_CACHE);
+
+	return usage;
+}
+
+static void cont_pte_swap_entry_free(struct swap_info_struct *p,
+		swp_entry_t entries[])
+{
+	struct swap_cluster_info *ci;
+	unsigned long offset = swp_offset(entries[0]);
+	unsigned char usage[HPAGE_CONT_PTE_NR];
+	int i;
+
+	ci = lock_cluster(p, offset);
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+		usage[i] = __swap_entry_free_locked(p, offset + i, 1);
+	unlock_cluster(ci);
+
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+		if (!usage[i])
+			free_swap_slot(entries[i]);
+	}
+}
+
+extern bool swap_slot_cache_enabled;
+static struct page *read_swap_cache_thp(swp_entry_t *pentry, gfp_t gfp_mask,
+			struct vm_area_struct *vma, unsigned long addr,
+			bool *new_page_allocated, int *ret)
+{
+	struct swap_info_struct *si;
+	struct swap_cluster_info *ci;
+	struct folio *folio;
+	struct page *page;
+	void *shadow = NULL;
+	swp_entry_t entry = *pentry;
+	unsigned long haddr = addr & HPAGE_CONT_PTE_MASK;
+	unsigned long hoffset = (addr - haddr)/PAGE_SIZE;
+	int i;
+
+	*ret = RET_STATUS_OTHER_FAIL;
+	*new_page_allocated = false;
+
+	for (;;) {
+		int err;
+		/*
+		 * First check the swap cache.  Since this is normally
+		 * called after lookup_swap_cache() failed, re-calling
+		 * that would confuse statistics.
+		 */
+		si = get_swap_device(entry);
+		if (!si) {
+			*ret = RET_STATUS_NO_SWP_INFO;
+			return NULL;
+		}
+		ci = si->cluster_info;
+
+		folio = filemap_get_folio(swap_address_space(entry),
+				swp_offset(entry) + hoffset);
+		page = &folio->page;
+		put_swap_device(si);
+		if (folio) {
+			*ret = RET_STATUS_HIT_SWPCACHE;
+			return page;
+		}
+		if (!ci) {
+			*ret = RET_STATUS_NO_CLUSTER_INFO;
+			return NULL;
+		}
+		/*
+		 * Just skip read ahead for unused swap slot.
+		 * During swap_off when swap_slot_cache is disabled,
+		 * we have to handle the race between putting
+		 * swap entry in swap cache and marking swap slot
+		 * as SWAP_HAS_CACHE.  That's done in later part of code or
+		 * else swap_off will be aborted if we return NULL.
+		 */
+		if (!__swp_swapcount(entry) && swap_slot_cache_enabled) {
+			*ret = RET_STATUS_ZERO_SWPCOUNT;
+			return NULL;
+		}
+
+		/*
+		 * Get a new page to read into from swap.  Allocate it now,
+		 * before marking swap_map SWAP_HAS_CACHE, when -EEXIST will
+		 * cause any racers to loop around until we add it to cache.
+		 */
+		folio = alloc_cont_pte_folio((GFP_TRANSHUGE_LIGHT | __GFP_RECLAIM | __GFP_MEMALLOC) & ~__GFP_MOVABLE & ~__GFP_COMP);
+		if (unlikely(!folio)) {
+			*ret = RET_STATUS_ALLOC_THP_FAIL;
+			return NULL;
+		}
+
+		page = &folio->page;
+
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+			SetPageCont(&page[i]);
+		prep_compound_page(page, HPAGE_CONT_PTE_ORDER);
+		prep_transhuge_page(page);
+		/*
+		 * 5.10 set subpages' refcount to 0 in prep_compound_page,
+		 * but 5.15 doesn't
+		 */
+		for (i = 1; i < HPAGE_CONT_PTE_NR; i++)
+			page_ref_add_unless(&page[i], -1, 0);
+
+		/*
+		 * Swap entry may have been freed since our caller observed it.
+		 */
+		err = cont_pte_swapcache_prepare(pentry);
+		if (!err) {
+			pgoff_t offset = swp_offset(entry);
+
+			ci += offset / HPAGE_CONT_PTE_NR;
+			spin_lock(&ci->lock);
+			ci->flags |= CLUSTER_FLAG_HUGE;
+			spin_unlock(&ci->lock);
+
+			break;
+		}
+
+		__SetPageUptodate(page);
+		put_page(page);
+		if (err != -EEXIST) {
+			*ret = RET_STATUS_SWPCACHE_RPEPARE_FAIL;
+			return NULL;
+		}
+
+		/*
+		 * We might race against __delete_from_swap_cache(), and
+		 * stumble across a swap_map entry whose SWAP_HAS_CACHE
+		 * has not yet been cleared.  Or race against another
+		 * __read_swap_cache_async(), which has set SWAP_HAS_CACHE
+		 * in swap_map, but not yet added its page to swap cache.
+		 */
+		schedule_timeout_uninterruptible(1);
+	}
+
+	/*
+	 * The swap entry is ours to swap in. Prepare the new page.
+	 */
+	__folio_set_locked(folio);
+	__folio_set_swapbacked(folio);
+
+	/* May fail (-ENOMEM) if XArray node allocation failed. */
+	if (mem_cgroup_swapin_charge_folio(folio, NULL, gfp_mask, entry)) {
+		*ret = RET_STATUS_MEMCG_CHARGE_FAIL;
+		goto fail_unlock;
+	}
+
+	if (add_to_swap_cache(folio, entry, gfp_mask & GFP_RECLAIM_MASK, &shadow)) {
+		*ret = RET_STATUS_ADD_TO_SWPCACHE_FAIL;
+		goto fail_unlock;
+	}
+
+	if (shadow)
+		workingset_refault(folio, shadow);
+
+	/* Caller will initiate read into locked page */
+	folio_add_lru(folio);
+	*new_page_allocated = true;
+	*ret = RET_STATUS_ALLOC_THP_SUCCESS;
+	return page + hoffset;
+
+fail_unlock:
+	put_swap_folio(folio, entry);
+	folio_unlock(folio);
+	folio_put(folio);
+	return NULL;
+}
+
+static int read_thp_no_swapcache_fallback(swp_entry_t *pentry,
+		gfp_t gfp_mask, struct vm_fault *vmf, struct folio **basefolios)
+{
+	int i;
+	int ret = 0;
+	unsigned long offset;
+	void *shadow = NULL;
+	struct folio *folio;
+	struct page *basepages[HPAGE_CONT_PTE_NR] = {NULL};
+	swp_entry_t entry, hentry = pentry[0];
+	struct vm_area_struct *vma = vmf->vma;
+	unsigned long start_offset = swp_offset(hentry);
+	unsigned long end_offset = start_offset + HPAGE_CONT_PTE_NR - 1;
+	unsigned long addr, haddr = vmf->address & HPAGE_CONT_PTE_MASK;
+	int nr_populated;
+
+	/* step1: alloc HPAGE_CONT_PTE_NR normal pages */
+	nr_populated = alloc_pages_bulk_array(gfp_mask, HPAGE_CONT_PTE_NR, basepages);
+
+	/* when bulk alloc failed, continue alloc_page_vma */
+	if (nr_populated != HPAGE_CONT_PTE_NR) {
+		for (i = nr_populated; i < HPAGE_CONT_PTE_NR; i++) {
+			addr = haddr + i * PAGE_SIZE;
+			basepages[i] = alloc_page_vma(gfp_mask, vma, addr);
+			if (!basepages[i]) {
+				ret = -ENOMEM;
+				goto out;
+			}
+		}
+	}
+
+	/* get folios */
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+		basefolios[i] = page_folio(basepages[i]);
+	}
+
+	/* step2: do the sync read */
+	for (offset = start_offset; offset <= end_offset; offset++) {
+		folio = basefolios[offset - start_offset];
+		entry = pentry[offset - start_offset];
+
+		__folio_set_locked(folio);
+		__folio_set_swapbacked(folio);
+		folio_set_swap_entry(folio, entry);
+
+		/* Tell memcg to use swap ownership records */
+		if (mem_cgroup_swapin_charge_folio(folio, NULL, gfp_mask, entry)) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		shadow = get_shadow_from_swap_cache(entry);
+		if (shadow)
+			workingset_refault(folio, shadow);
+
+		folio_add_lru(folio);
+
+#ifndef CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM
+		swap_readpage(folio_page(folio, 0), true);
+#endif
+	}
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM
+	/*Read pages to basepages from swap once.
+	 *first page of basepages : SetPageContFallback flag and
+	 *page->index points to basepages
+	 */
+	SetPageContFallback(basepages[0]);
+	basepages[0]->index = (pgoff_t)basepages; /* page has NO freelist in 6.1!*/
+	swap_readpage(basepages[0], true, NULL);
+#endif
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM
+	ClearPageContFallback(basepages[0]);
+#endif
+
+	return 0;
+out:
+	if (i) {
+		for (i--; i >= 0; i--)
+			put_page(basepages[i]);
+	}
+	return ret;
+}
+
+extern void unlock_nr_folios(struct folio **folio, int nr);
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+
 /*
  * Restore a potential device exclusive pte to a working pte entry
  */
@@ -3700,8 +4768,14 @@ static inline bool should_try_to_free_swap(struct folio *folio,
 	 * user. Try freeing the swapcache to get rid of the swapcache
 	 * reference only in case it's likely that we'll be the exlusive user.
 	 */
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	return (fault_flags & FAULT_FLAG_WRITE) && !folio_test_ksm(folio) &&
 		folio_ref_count(folio) == 2;
+#else
+	return (fault_flags & FAULT_FLAG_WRITE) && !folio_test_ksm(folio) &&
+		folio_ref_count(folio) == 1 + folio_nr_pages(folio);
+#endif
+
 }
 
 static vm_fault_t pte_marker_clear(struct vm_fault *vmf)
@@ -3777,6 +4851,18 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	pte_t pte;
 	vm_fault_t ret = 0;
 	void *shadow = NULL;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	int i;
+	unsigned long haddr = vmf->address & HPAGE_CONT_PTE_MASK;
+	pte_t *ptep = vmf->pte - (vmf->address - haddr)/PAGE_SIZE;
+	swp_entry_t cont_pte_entries[HPAGE_CONT_PTE_NR];
+	bool is_thp_swpin = false;
+	int result;
+	bool is_thp_fallback_swpin = false;
+	struct folio *basefolios[HPAGE_CONT_PTE_NR] = { NULL };
+	/* only critical native tasks have hugepage */
+	gfp_t critical_gfp = is_critical_native(current) ?  ___GFP_DIRECT_RECLAIM : 0;
+#endif
 
 	if (!pte_unmap_same(vmf))
 		goto out;
@@ -3842,13 +4928,138 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	if (!folio) {
 		if (data_race(si->flags & SWP_SYNCHRONOUS_IO) &&
 		    __swap_count(entry) == 1) {
-			/* skip swapcache */
-			folio = vma_alloc_folio(GFP_HIGHUSER_MOVABLE|__GFP_CMA,
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			bool suitable = false;
+			bool thp_swappable = false;
+			bool pte_changed = false;
+#endif
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			if (is_thp_swap(si)) {
+				CHP_BUG_ON(vma->vm_flags & VM_SHARED);
+				suitable = transhuge_cont_pte_vma_suitable(vma, haddr);
+				if (!suitable) {
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+					commit_chp_abnormal_ptes_record(DOUBLE_MAP_REASON_DO_SWAP_PAGE3);
+#endif
+					set_cluster_doublemap(entry);
+					pr_err("@@@@%s-%d current:%s-%d vma:%lx-%lx fault addr:%lx vma-not-eligible doublemap eligible:%d, ptep:%lx ptes:%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx\n",
+						__func__, __LINE__, current->comm, current->pid, vma->vm_start, vma->vm_end, vmf->address,
+						vma_is_chp_anonymous(vma),
+						(unsigned long)ptep,
+						(unsigned long long)pte_val(*(ptep + 0)), (unsigned long long)pte_val(*(ptep + 1)), (unsigned long long)pte_val(*(ptep + 2)), (unsigned long long)pte_val(*(ptep + 3)),  (unsigned long long)pte_val(*(ptep + 4)), (unsigned long long)pte_val(*(ptep + 5)), (unsigned long long)pte_val(*(ptep + 6)), (unsigned long long)pte_val(*(ptep + 7)),
+						(unsigned long long)pte_val(*(ptep + 8)), (unsigned long long)pte_val(*(ptep + 9)), (unsigned long long)pte_val(*(ptep + 10)), (unsigned long long)pte_val(*(ptep + 11)),  (unsigned long long)pte_val(*(ptep + 12)), (unsigned long long)pte_val(*(ptep + 13)), (unsigned long long)pte_val(*(ptep + 14)), (unsigned long long)pte_val(*(ptep + 15)));
+				} else {
+					/*
+					 * zap_pte_range and copy_pte_range only hold ptl, we need
+					 * to atomically check 16 swap entries as they are modify-
+					 * ing pte swap entries one by one
+					 */
+					vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address, &vmf->ptl);
+					thp_swappable = is_cont_pte_swap(entry, ptep, cont_pte_entries, vmf, &pte_changed);
+					pte_unmap_unlock(vmf->pte, vmf->ptl);
+				}
+			}
+			if (suitable && thp_swappable) {
+				count_vm_chp_event(THP_SWPIN_NO_SWAPCACHE_ENTRY);
+				if (critical_gfp)
+					count_vm_chp_event(THP_SWPIN_CRITICAL_ENTRY);
+
+				folio = alloc_cont_pte_folio((GFP_TRANSHUGE_LIGHT | __GFP_KSWAPD_RECLAIM | critical_gfp) & ~__GFP_MOVABLE & ~__GFP_COMP);
+				page = &folio->page;
+				if (folio) {
+					int i;
+
+					count_vm_chp_event(THP_SWPIN_NO_SWAPCACHE_ALLOC_SUCCESS);
+					for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+						SetPageCont(&page[i]);
+					prep_compound_page(page, HPAGE_CONT_PTE_ORDER);
+					prep_transhuge_page(page);
+					/*
+					 * 5.10 set subpages' refcount to 0 in prep_compound_page,
+					 * but 5.15 doesn't
+					 */
+					for (i = 1; i < HPAGE_CONT_PTE_NR; i++)
+						page_ref_add_unless(&page[i], -1, 0);
+					__folio_set_locked(folio);
+					__folio_set_swapbacked(folio);
+
+					if (mem_cgroup_swapin_charge_folio(folio,
+								vma->vm_mm, GFP_KERNEL,
+								cont_pte_entries[0])) {
+						ret = VM_FAULT_OOM;
+						goto out_page;
+					}
+					mem_cgroup_swapin_uncharge_swap(entry);
+
+					shadow = get_shadow_from_swap_cache(cont_pte_entries[0]);
+					if (shadow)
+						workingset_refault(folio, shadow);
+
+					folio_add_lru(folio);
+
+					folio_set_swap_entry(folio, cont_pte_entries[0]);
+					swap_readpage(page, true, NULL);
+					is_thp_swpin = true;
+					goto alloc_page_done;
+				}
+				if (critical_gfp)
+					count_vm_chp_event(THP_SWPIN_CRITICAL_FALLBACK);
+
+				count_vm_chp_event(THP_SWPIN_NO_SWAPCACHE_ALLOC_FAIL);
+
+				/* process thp no swapcache fallback */
+				{
+					is_thp_fallback_swpin = true;
+					count_vm_chp_event(THP_SWPIN_NO_SWAPCACHE_FALLBACK_ENTRY);
+					result = read_thp_no_swapcache_fallback(&cont_pte_entries[0],
+							GFP_HIGHUSER_MOVABLE, vmf, basefolios);
+					if (result == -ENOMEM) {
+						ret = VM_FAULT_OOM;
+						count_vm_chp_event(THP_SWPIN_NO_SWAPCACHE_FALLBACK_ALLOC_FAIL);
+					} else if (!result) {
+						count_vm_chp_event(THP_SWPIN_NO_SWAPCACHE_FALLBACK_ALLOC_SUCCESS);
+						folio = basefolios[vmf->pte - ptep];
+						page = &folio->page;
+
+						goto alloc_page_done;
+					}
+				}
+			} else
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+			{
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+				/* other threads have probably set ptes for this process */
+				if (pte_changed) {
+					ret = 0;
+					goto out;
+				}
+				if (is_thp_swap(si)) {
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+					commit_chp_abnormal_ptes_record(DOUBLE_MAP_REASON_DO_SWAP_PAGE4);
+#endif
+					set_cluster_doublemap(entry);
+					if (suitable) {
+						pr_err("@@@@%s-%d current:%s-%d-%d vma:%lx-%lx fault addr:%lx entry val:%lx offset:%lx pte-unchanged doublemap eligible:%d, ptep:%lx ptes:%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx\n",
+						__func__, __LINE__, current->comm, current->pid, current->tgid, vma->vm_start, vma->vm_end, vmf->address,
+						entry.val, swp_offset(entry), vma_is_chp_anonymous(vma),
+						(unsigned long)ptep,
+						(unsigned long long)pte_val(*(ptep + 0)), (unsigned long long)pte_val(*(ptep + 1)), (unsigned long long)pte_val(*(ptep + 2)), (unsigned long long)pte_val(*(ptep + 3)),  (unsigned long long)pte_val(*(ptep + 4)), (unsigned long long)pte_val(*(ptep + 5)), (unsigned long long)pte_val(*(ptep + 6)), (unsigned long long)pte_val(*(ptep + 7)),
+						(unsigned long long)pte_val(*(ptep + 8)), (unsigned long long)pte_val(*(ptep + 9)), (unsigned long long)pte_val(*(ptep + 10)), (unsigned long long)pte_val(*(ptep + 11)),  (unsigned long long)pte_val(*(ptep + 12)), (unsigned long long)pte_val(*(ptep + 13)), (unsigned long long)pte_val(*(ptep + 14)), (unsigned long long)pte_val(*(ptep + 15)));
+					}
+				}
+#endif
+				/* skip swapcache */
+				folio = vma_alloc_folio(GFP_HIGHUSER_MOVABLE|__GFP_CMA,
 						0, vma, vmf->address, false);
-			page = &folio->page;
-			if (folio) {
-				__folio_set_locked(folio);
-				__folio_set_swapbacked(folio);
+				page = &folio->page;
+				if (folio) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+					CHP_BUG_ON(PageCont(page));
+					CHP_BUG_ON(PageContRefill(page));
+#endif
+					__folio_set_locked(folio);
+					__folio_set_swapbacked(folio);
 
 				if (mem_cgroup_swapin_charge_folio(folio,
 							vma->vm_mm, GFP_KERNEL,
@@ -3864,20 +5075,133 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
 				folio_add_lru(folio);
 
-				/* To provide entry to swap_readpage() */
-				folio_set_swap_entry(folio, entry);
-				swap_readpage(page, true, NULL);
-				folio->private = NULL;
+					/* To provide entry to swap_readpage() */
+					folio_set_swap_entry(folio, entry);
+					swap_readpage(page, true, NULL);
+					folio->private = NULL;
+				}
 			}
 		} else {
-			page = swapin_readahead(entry,
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			bool suitable = false;
+			bool thp_swappable = false;
+			bool pte_changed = false;
+
+			if (is_thp_swap(si)) {
+				CHP_BUG_ON(vma->vm_flags & VM_SHARED);
+				suitable = transhuge_cont_pte_vma_suitable(vma, haddr);
+				if (!suitable) {
+					set_cluster_doublemap(entry);
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+					commit_chp_abnormal_ptes_record(DOUBLE_MAP_REASON_DO_SWAP_PAGE1);
+#endif
+					pr_err("@@@@%s-%d current:%s-%d vma:%lx-%lx fault addr:%lx vma-not-eligible doublemap eligible:%d ptep:%lx ptes:%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx\n",
+						__func__, __LINE__, current->comm, current->pid, vma->vm_start, vma->vm_end, vmf->address,
+						vma_is_chp_anonymous(vma),
+						(unsigned long)ptep,
+						(unsigned long long)pte_val(*(ptep + 0)), (unsigned long long)pte_val(*(ptep + 1)), (unsigned long long)pte_val(*(ptep + 2)), (unsigned long long)pte_val(*(ptep + 3)),  (unsigned long long)pte_val(*(ptep + 4)), (unsigned long long)pte_val(*(ptep + 5)), (unsigned long long)pte_val(*(ptep + 6)), (unsigned long long)pte_val(*(ptep + 7)),
+						(unsigned long long)pte_val(*(ptep + 8)), (unsigned long long)pte_val(*(ptep + 9)), (unsigned long long)pte_val(*(ptep + 10)), (unsigned long long)pte_val(*(ptep + 11)),  (unsigned long long)pte_val(*(ptep + 12)), (unsigned long long)pte_val(*(ptep + 13)), (unsigned long long)pte_val(*(ptep + 14)), (unsigned long long)pte_val(*(ptep + 15)));
+				} else {
+					/*
+					 * zap_pte_range and copy_pte_range only hold ptl, we need
+					 * to atomically check 16 swap entries as they are modify-
+					 * ing pte swap entries one by one
+					 */
+					vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address, &vmf->ptl);
+					thp_swappable = is_cont_pte_swap(entry, ptep, cont_pte_entries, vmf, &pte_changed);
+					pte_unmap_unlock(vmf->pte, vmf->ptl);
+				}
+			}
+			if (suitable && thp_swappable) {
+				bool new_page_allocated = false;
+
+				if (critical_gfp)
+					count_vm_chp_event(THP_SWPIN_CRITICAL_ENTRY);
+
+				count_vm_chp_event(THP_SWPIN_SWAPCACHE_ENTRY);
+				page = read_swap_cache_thp(&cont_pte_entries[0], GFP_HIGHUSER_MOVABLE,
+					vma, vmf->address, &new_page_allocated, &result);
+				if (new_page_allocated) {
+					swap_readpage(compound_head(page), true, NULL);
+					count_vm_chp_event(THP_SWPIN_SWAPCACHE_ALLOC_SUCCESS);
+					folio = page_folio(page);
+				} else {
+					count_vm_chp_event(THP_SWPIN_SWAPCACHE_PREPARE_FAIL);
+					atomic64_inc(&perf_stat.thp_read_swpcache_ret_status_stat[result]);
+					/*
+					 * process thp swapin with swapcache fallback(only handles
+					 * fallbacks where thp fail to be allocated).
+					 */
+					if (result == RET_STATUS_ALLOC_THP_FAIL) {
+						if (critical_gfp)
+							count_vm_chp_event(THP_SWPIN_CRITICAL_FALLBACK);
+						/*
+						 * Similar to sync swapin, the pages is not added
+						 * to the swap cache, and cow operations are not
+						 * even required.
+						 */
+						is_thp_fallback_swpin = true;
+						count_vm_chp_event(THP_SWPIN_SWAPCACHE_FALLBACK_ENTRY);
+						result = read_thp_no_swapcache_fallback(&cont_pte_entries[0],
+								GFP_HIGHUSER_MOVABLE, vmf, basefolios);
+						if (result == -ENOMEM) {
+							ret = VM_FAULT_OOM;
+							count_vm_chp_event(THP_SWPIN_SWAPCACHE_FALLBACK_ALLOC_FAIL);
+						} else if (!result) {
+							count_vm_chp_event(THP_SWPIN_SWAPCACHE_FALLBACK_ALLOC_SUCCESS);
+							folio = basefolios[vmf->pte - ptep];
+							page = &folio->page;
+
+							goto alloc_page_done;
+						}
+					} else if (page) {
+						/* we hit the swapcache. assign folio, or XXX returns OOM */
+						folio = page_folio(page);
+					}
+				}
+
+				if (page && PageCompound(page))
+					is_thp_swpin = true;
+			} else
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+			{
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+				/* other threads have probably set ptes for this process */
+				if (pte_changed) {
+					ret = 0;
+					goto out;
+				}
+				if (is_thp_swap(si)) {
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+					commit_chp_abnormal_ptes_record(DOUBLE_MAP_REASON_DO_SWAP_PAGE2);
+#endif
+					set_cluster_doublemap(entry);
+					if (suitable) {
+						pr_err("@@@@%s-%d current:%s-%d vma:%lx-%lx fault addr:%lx pte-unchanged doublemap eligible:%d ptep:%lx ptes:%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx-%llx\n",
+							__func__, __LINE__, current->comm, current->pid, vma->vm_start, vma->vm_end, vmf->address,
+							vma_is_chp_anonymous(vma),
+							(unsigned long)ptep,
+							(unsigned long long)pte_val(*(ptep + 0)), (unsigned long long)pte_val(*(ptep + 1)), (unsigned long long)pte_val(*(ptep + 2)), (unsigned long long)pte_val(*(ptep + 3)),  (unsigned long long)pte_val(*(ptep + 4)), (unsigned long long)pte_val(*(ptep + 5)), (unsigned long long)pte_val(*(ptep + 6)), (unsigned long long)pte_val(*(ptep + 7)),
+							(unsigned long long)pte_val(*(ptep + 8)), (unsigned long long)pte_val(*(ptep + 9)), (unsigned long long)pte_val(*(ptep + 10)), (unsigned long long)pte_val(*(ptep + 11)),  (unsigned long long)pte_val(*(ptep + 12)), (unsigned long long)pte_val(*(ptep + 13)), (unsigned long long)pte_val(*(ptep + 14)), (unsigned long long)pte_val(*(ptep + 15)));
+					}
+				}
+#endif
+				page = swapin_readahead(entry,
 						GFP_HIGHUSER_MOVABLE|__GFP_CMA,
 						vmf);
-			if (page)
-				folio = page_folio(page);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+				CHP_BUG_ON(page && PageCont(page));
+				CHP_BUG_ON(page && PageContRefill(page));
+#endif
+				if (page)
+					folio = page_folio(page);
+			}
 			swapcache = folio;
 		}
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+alloc_page_done:
+#endif
 		if (!folio) {
 			/*
 			 * Back out if somebody else faulted in this pte
@@ -3886,7 +5210,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
 					vmf->address, &vmf->ptl);
 			if (likely(pte_same(*vmf->pte, vmf->orig_pte)))
-				ret = VM_FAULT_OOM;
+				ret = VM_FAULT_OOM; /* XXX */
 			goto unlock;
 		}
 
@@ -3903,7 +5227,12 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		goto out_release;
 	}
 
-	ret |= folio_lock_or_retry(folio, vmf);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (!swapcache && is_thp_fallback_swpin)
+		ret |= lock_nr_folios_or_retry(basefolios, vmf, HPAGE_CONT_PTE_NR);
+	else
+#endif
+		ret |= folio_lock_or_retry(folio, vmf);
 	if (ret & VM_FAULT_RETRY)
 		goto out_release;
 
@@ -4008,6 +5337,117 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		}
 	}
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (ContPteHugePage(page)) {
+		struct page *head =  compound_head(page);
+		/* goto non-SPF, also avoid race with concurrent swapin */
+		if (!is_cont_pte_swap(entry, ptep, cont_pte_entries, NULL, NULL) ||
+				!transhuge_cont_pte_vma_suitable(vma, haddr)) {
+			if (is_thp_swpin) {
+				if (!(vmf->flags & FAULT_FLAG_VMA_LOCK) &&
+				    (vmf->flags & FAULT_FLAG_ALLOW_RETRY)) {
+#if CONFIG_NON_SPF_FAULT_RETRY_DEBUG
+					atomic64_inc(&perf_stat.non_sfp_fault_retry_cnt[SWPIN_CHP_FAULT_RETRY]);
+#endif
+					if (!(vmf->flags & FAULT_FLAG_RETRY_NOWAIT))
+						mmap_read_unlock(vma->vm_mm);
+				}
+
+				ret = VM_FAULT_RETRY;
+				goto out_nomap;
+			} else {
+				goto basepages;
+			}
+		}
+		if (!is_thp_swpin && swapcache)
+			atomic64_inc(&thp_swpin_hit_swapcache);
+
+		cont_pte_swap_entry_free(swp_swap_info(entry), cont_pte_entries);
+		if (should_try_to_free_swap(folio, vma, vmf->flags))
+			folio_free_swap(folio);
+
+		add_mm_counter_fast(vma->vm_mm, MM_ANONPAGES, HPAGE_CONT_PTE_NR);
+		add_mm_counter_fast(vma->vm_mm, MM_SWAPENTS, -HPAGE_CONT_PTE_NR);
+		pte = mk_pte(head, vma->vm_page_prot);
+
+		if (!folio_test_ksm(folio) &&
+		    (exclusive || folio_ref_count(folio) == 1)) {
+			if (vmf->flags & FAULT_FLAG_WRITE) {
+				pte = maybe_mkwrite(pte_mkdirty(pte), vma);
+				vmf->flags &= ~FAULT_FLAG_WRITE;
+				ret |= VM_FAULT_WRITE;
+			}
+			rmap_flags |= RMAP_EXCLUSIVE;
+		}
+
+		flush_icache_page(vma, head);
+		if (pte_swp_soft_dirty(vmf->orig_pte))
+			pte = pte_mksoft_dirty(pte);
+		if (pte_swp_uffd_wp(vmf->orig_pte)) {
+			pte = pte_mkuffd_wp(pte);
+			pte = pte_wrprotect(pte);
+		}
+		pte = pte_mkcont(pte);
+		cont_pte_set_huge_pte_at(vma->vm_mm, haddr, ptep, pte);
+		vmf->orig_pte = READ_ONCE(*vmf->pte);
+
+		page_add_anon_rmap(head, vma, haddr, rmap_flags | RMAP_COMPOUND);
+		goto pte_set_done;
+	} else if (is_thp_fallback_swpin) {
+		unsigned long addr;
+		pte_t *_ptep;
+		struct page *sub_page;
+		/* goto non-SPF, also avoid race with concurrent swapin */
+		if (!is_cont_pte_swap(entry, ptep, cont_pte_entries, NULL, NULL) ||
+				!transhuge_cont_pte_vma_suitable(vma, haddr)) {
+			pr_err_ratelimited("FIXME: doublemap %s:%d\n", __func__, __LINE__);
+
+			if (!(vmf->flags & FAULT_FLAG_VMA_LOCK) &&
+			    (vmf->flags & FAULT_FLAG_ALLOW_RETRY)) {
+#if CONFIG_NON_SPF_FAULT_RETRY_DEBUG
+				atomic64_inc(&perf_stat.non_sfp_fault_retry_cnt[SWPIN_FALLBACK_FAULT_RETRY]);
+#endif
+				if (!(vmf->flags & FAULT_FLAG_RETRY_NOWAIT))
+					mmap_read_unlock(vma->vm_mm);
+			}
+
+			ret = VM_FAULT_RETRY;
+			goto out_nomap;
+		}
+
+		add_mm_counter_fast(vma->vm_mm, MM_ANONPAGES, HPAGE_CONT_PTE_NR);
+		add_mm_counter_fast(vma->vm_mm, MM_SWAPENTS, -HPAGE_CONT_PTE_NR);
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++) {
+			addr = haddr + i * PAGE_SIZE;
+			_ptep = ptep + i;
+			sub_page = &basefolios[i]->page;
+			pte = mk_pte(sub_page, vma->vm_page_prot);
+
+			/* no swapcache no cow */
+			if (vmf->flags & FAULT_FLAG_WRITE) {
+				pte = maybe_mkwrite(pte_mkdirty(pte), vma);
+				vmf->flags &= ~FAULT_FLAG_WRITE;
+				ret |= VM_FAULT_WRITE;
+			}
+			rmap_flags |= RMAP_EXCLUSIVE;
+			flush_icache_page(vma, sub_page);
+			if (pte_swp_soft_dirty(vmf->orig_pte))
+				pte = pte_mksoft_dirty(pte);
+			if (pte_swp_uffd_wp(vmf->orig_pte)) {
+				pte = pte_mkuffd_wp(pte);
+				pte = pte_wrprotect(pte);
+			}
+			set_pte_at(vma->vm_mm, addr, _ptep, pte);
+
+			page_add_anon_rmap(sub_page, vma, addr, rmap_flags);
+		}
+		cont_pte_swap_entry_free(swp_swap_info(entry), cont_pte_entries);
+		goto pte_set_done;
+	}
+
+basepages:
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
+
 	/*
 	 * Some architectures may have to restore extra metadata to the page
 	 * when reading from swap. This metadata may be indexed by swap entry
@@ -4065,7 +5505,16 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
 	arch_do_swap_page(vma->vm_mm, vma, vmf->address, pte, vmf->orig_pte);
 
-	folio_unlock(folio);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+pte_set_done:
+#endif
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (!swapcache && is_thp_fallback_swpin)
+		unlock_nr_folios(basefolios, HPAGE_CONT_PTE_NR);
+	else
+#endif
+		folio_unlock(folio);
 	if (folio != swapcache && swapcache) {
 		/*
 		 * Hold the lock to avoid the swap entry to be reused
@@ -4079,7 +5528,12 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		folio_put(swapcache);
 	}
 
-	if (vmf->flags & FAULT_FLAG_WRITE) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/* no swapcache no cow */
+	if (!is_thp_fallback_swpin && vmf->flags & FAULT_FLAG_WRITE) {
+#else
+		if (vmf->flags & FAULT_FLAG_WRITE) {
+#endif
 		ret |= do_wp_page(vmf);
 		if (ret & VM_FAULT_ERROR)
 			ret &= VM_FAULT_ERROR;
@@ -4097,9 +5551,20 @@ out:
 out_nomap:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
 out_page:
-	folio_unlock(folio);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+        if (!swapcache && is_thp_fallback_swpin)
+		unlock_nr_folios(basefolios, HPAGE_CONT_PTE_NR);
+	else
+#endif
+		folio_unlock(folio);
 out_release:
-	folio_put(folio);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (!swapcache && is_thp_fallback_swpin) {
+		for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+			folio_put(basefolios[i]);
+	} else
+#endif
+		folio_put(folio);
 	if (folio != swapcache && swapcache) {
 		folio_unlock(swapcache);
 		folio_put(swapcache);
@@ -4108,6 +5573,172 @@ out_release:
 		put_swap_device(si);
 	return ret;
 }
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+static vm_fault_t __do_huge_cont_pte_anonymous_page(struct vm_fault *vmf,
+			struct page *page)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	unsigned long haddr = vmf->address & HPAGE_CONT_PTE_MASK;
+	vm_fault_t ret = 0;
+	pte_t *ptep;
+
+	VM_BUG_ON_PAGE(!PageCompound(page), page);
+
+	if (mem_cgroup_charge(page_folio(page), vma->vm_mm, GFP_KERNEL)) {
+		put_page(page);
+		count_vm_event(THP_FAULT_FALLBACK);
+		count_vm_event(THP_FAULT_FALLBACK_CHARGE);
+		return VM_FAULT_FALLBACK;
+	}
+	cgroup_throttle_swaprate(page, GFP_KERNEL);
+
+	clear_huge_page(page, vmf->address, HPAGE_CONT_PTE_NR);
+	/*
+	 * The memory barrier inside __SetPageUptodate makes sure that
+	 * clear_huge_page writes become visible before the set_pmd_at()
+	 * write.
+	 */
+	__SetPageUptodate(page);
+
+	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
+			&vmf->ptl);
+
+	ptep = vmf->pte - (vmf->address - haddr)/PAGE_SIZE;
+	if (unlikely(!pte_none(*vmf->pte))) {
+		goto unlock_release;
+	} else if (!cont_pte_none(ptep)) {
+		ret = VM_FAULT_FALLBACK;
+		goto unlock_release;
+	} else {
+		pte_t entry;
+
+		ret = check_stable_address_space(vma->vm_mm);
+		if (ret)
+			goto unlock_release;
+
+		/* Deliver the page fault to userland */
+		if (userfaultfd_missing(vma)) {
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			put_page(page);
+			return handle_userfault(vmf, VM_UFFD_MISSING);
+		}
+
+		entry = mk_pte(page, vma->vm_page_prot);
+		if (vma->vm_flags & VM_WRITE)
+			entry = pte_mkwrite(pte_mkdirty(entry));
+		entry = pte_mkyoung(entry);
+		entry = pte_mkcont(entry);
+		entry = pte_mkdirty(entry);
+		cont_pte_set_huge_pte_at(vma->vm_mm, haddr, ptep, entry);
+		page_add_new_anon_rmap(page, vma, haddr);
+		lru_cache_add_inactive_or_unevictable(page, vma);
+		add_mm_counter(vma->vm_mm, MM_ANONPAGES, HPAGE_CONT_PTE_NR);
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+		count_vm_event(THP_FAULT_ALLOC);
+		count_memcg_event_mm(vma->vm_mm, THP_FAULT_ALLOC);
+	}
+
+	return 0;
+unlock_release:
+	pte_unmap_unlock(vmf->pte, vmf->ptl);
+	put_page(page);
+	return ret;
+
+}
+
+static vm_fault_t do_huge_cont_pte_anonymous_page(struct vm_fault *vmf)
+{
+	int i;
+	pte_t *ptep;
+	struct page *page;
+	struct vm_area_struct *vma = vmf->vma;
+	unsigned long haddr = vmf->address & HPAGE_CONT_PTE_MASK;
+	gfp_t gfp_mask = (GFP_TRANSHUGE_LIGHT | __GFP_KSWAPD_RECLAIM | __GFP_ZERO) & ~__GFP_MOVABLE & ~__GFP_COMP;
+
+	if (!transhuge_cont_pte_vma_suitable(vma, haddr))
+		return VM_FAULT_FALLBACK;
+
+	/* Allocate our own private page. */
+	if (unlikely(anon_vma_prepare(vma)))
+		return VM_FAULT_OOM;
+
+	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
+			!mm_forbids_zeropage(vma->vm_mm) &&
+			transparent_hugepage_use_zero_page()) {
+		struct page *zero_page;
+		vm_fault_t ret;
+
+		zero_page = mm_get_huge_zero_page(vma->vm_mm);
+
+		if (unlikely(!zero_page)) {
+			count_vm_event(THP_FAULT_FALLBACK);
+			return VM_FAULT_FALLBACK;
+		}
+
+		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
+				&vmf->ptl);
+
+		ret = 0;
+		ptep = vmf->pte - (vmf->address - haddr)/PAGE_SIZE;
+
+		if (!pte_none(*vmf->pte)) {
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			return 0;
+		}
+
+		if (!cont_pte_none(ptep)) {
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			return VM_FAULT_FALLBACK;
+		}
+
+		ret = check_stable_address_space(vma->vm_mm);
+		if (ret) {
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+		} else if (userfaultfd_missing(vma)) {
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+			ret = handle_userfault(vmf, VM_UFFD_MISSING);
+			VM_BUG_ON(ret & VM_FAULT_FALLBACK);
+		} else {
+			set_cont_pte_huge_zero_page(vma->vm_mm, vma,
+					   vmf->address, vmf->pte, zero_page);
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+		}
+		return ret;
+	}
+
+	CHP_BUG_ON(vma->vm_flags & VM_SHARED);
+	page = alloc_cont_pte_hugepage(gfp_mask);
+	if (unlikely(!page)) {
+		count_vm_event(THP_FAULT_FALLBACK);
+		count_vm_chp_event(THP_DO_ANON_PAGES_FALLBACK);
+		return VM_FAULT_FALLBACK;
+	}
+
+	count_vm_chp_event(THP_DO_ANON_PAGES);
+
+	for (i = 0; i < HPAGE_CONT_PTE_NR; i++)
+		SetPageCont(&page[i]);
+	prep_compound_page(page, HPAGE_CONT_PTE_ORDER);
+	prep_transhuge_page(page);
+	/*
+	 * 5.10 set subpages' refcount to 0 in prep_compound_page,
+	 * but 6.1 doesn't
+	 */
+	for (i = 1; i < HPAGE_CONT_PTE_NR; i++)
+		page_ref_add_unless(&page[i], -1, 0);
+
+	return __do_huge_cont_pte_anonymous_page(vmf, page);
+}
+
+static inline vm_fault_t create_huge_cont_pte(struct vm_fault *vmf)
+{
+	if (vma_is_anonymous(vmf->vma))
+		return do_huge_cont_pte_anonymous_page(vmf);
+	return VM_FAULT_FALLBACK;
+}
+#endif
+
 
 /*
  * We enter with non-exclusive mmap_lock (to exclude vma changes,
@@ -4141,6 +5772,27 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	/* See comment in handle_pte_fault() */
 	if (unlikely(pmd_trans_unstable(vmf->pmd)))
 		return 0;
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/* Try cont pte first */
+	if (hugepage_vma_check(vma, vma->vm_flags, false, true, true)) {
+		ret = create_huge_cont_pte(vmf);
+
+		if (!(ret & VM_FAULT_FALLBACK))
+			return ret;
+		/*
+		 * NOTE: For the fallback to small page process,
+		 * we must reset ret to 0. Otherwise, some checking
+		 * errors will occur, such as the gup code.
+		 * see faultin_page
+		 *      ->handle_mm_fault
+		 */
+		if (ret & VM_FAULT_FALLBACK) {
+			vmf->pte = NULL;
+			ret = 0;
+		}
+	}
+#endif
 
 	/* Use the zero-page for reads */
 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
@@ -4887,6 +6539,7 @@ out_map:
 
 static inline vm_fault_t create_huge_pmd(struct vm_fault *vmf)
 {
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	struct vm_area_struct *vma = vmf->vma;
 	if (vma_is_anonymous(vma))
 		return do_huge_pmd_anonymous_page(vmf);
@@ -4897,6 +6550,7 @@ static inline vm_fault_t create_huge_pmd(struct vm_fault *vmf)
 		}
 		return vma->vm_ops->huge_fault(vmf, PE_SIZE_PMD);
 	}
+#endif
 	return VM_FAULT_FALLBACK;
 }
 

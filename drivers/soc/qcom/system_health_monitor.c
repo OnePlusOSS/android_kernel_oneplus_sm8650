@@ -75,19 +75,6 @@ static struct device *system_health_monitor_devp;
 static struct workqueue_struct *shm_svc_workqueue;
 static struct qmi_handle *shm_svc_handle;
 
-enum {
-	SHM_STATE_DEFAULT = 0,
-	SHM_STATE_CHECKING,
-};
-
-struct restart_work {
-	struct delayed_work dwork;
-	struct hma_info *hmap;
-	bool connected;
-	u32 sq_node;
-	u32 sq_port;
-};
-
 /**
  * struct hma_info - Information about a Health Monitor Agent(HMA)
  * @list:		List to chain up the hma to the hma_list.
@@ -104,6 +91,19 @@ struct restart_work {
  * @rproc:		Remoteproc phandler to the subsystem.
  * @rwp:		The work_struct to handle shm check fail.
  */
+enum {
+	SHM_STATE_DEFAULT = 0,
+	SHM_STATE_CHECKING,
+};
+
+struct restart_work {
+	struct delayed_work dwork;
+	struct hma_info *hmap;
+	bool connected;
+	u32 sq_node;
+	u32 sq_port;
+};
+
 struct hma_info {
 	struct list_head list;
 	char subsys_name[SUBSYS_NAME_LEN];
@@ -143,7 +143,6 @@ static int restart_notifier_cb(struct notifier_block *this,
 	struct hma_info *tmp_hma_info =
 		container_of(this, struct hma_info, restart_nb);
 	struct restart_work *rwp;
-
 	if (code == QCOM_SSR_BEFORE_SHUTDOWN) {
 		atomic_set(&tmp_hma_info->is_in_reset, 1);
 		tmp_hma_info->connected = false;
@@ -179,10 +178,9 @@ static void shm_svc_restart_worker(struct work_struct *work)
 
 	if (atomic_read(&tmp_hma_info->check_state) != SHM_STATE_CHECKING) {
 		SHM_INFO_LOG("%s: %s restart worker unexpected\n",
-			 __func__, tmp_hma_info->subsys_name);
+			__func__, tmp_hma_info->subsys_name);
 		return;
 	}
-
 	if (!tmp_hma_info->connected || (rwp->sq_node != tmp_hma_info->sq.sq_node ||
 	    rwp->sq_port != tmp_hma_info->sq.sq_port)) {
 		SHM_INFO_LOG(
@@ -321,12 +319,12 @@ static void shm_reg_req_handler(struct qmi_handle *qmi, struct sockaddr_qrtr *sq
 	mutex_lock(&hma_info_list_lock);
 	list_for_each_entry(tmp_hma_info, &hma_info_list, list) {
 		if (!strcmp(tmp_hma_info->subsys_name, req->name) &&
-		    !atomic_read(&tmp_hma_info->is_in_reset)) {
+			!atomic_read(&tmp_hma_info->is_in_reset)) {
 			if (tmp_hma_info->connected)
 				SHM_ERR("%s: Duplicate HMA from %s-cur[0x%x:0x%x] new[0x%x:0x%x]\n",
 					__func__, req->name, tmp_hma_info->sq.sq_node,
 					tmp_hma_info->sq.sq_port, sq->sq_node, sq->sq_port);
-
+					
 			tmp_hma_info->connected = true;
 			atomic_set(&tmp_hma_info->check_state, SHM_STATE_DEFAULT);
 			memcpy(&tmp_hma_info->sq, sq, sizeof(*sq));
@@ -402,7 +400,7 @@ static void shm_chk_comp_req_handler(struct qmi_handle *qmi, struct sockaddr_qrt
 				cancel_delayed_work_sync(&rwp->dwork);
 			} else {
 				SHM_INFO_LOG("%s: %s Health Check Unexpected.\n",
-					 __func__, tmp_hma_info->subsys_name);
+					__func__, tmp_hma_info->subsys_name);
 			}
 		} else {
 			SHM_INFO_LOG("%s: %s Health Check Failure\n",

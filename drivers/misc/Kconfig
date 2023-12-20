@@ -519,6 +519,13 @@ config QSEECOM_PROXY
 	 These callback functions can be used to start, shutdown and
 	 send commands to the trusted apps.
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+config HAPTIC_FEEDBACK
+	tristate "Haptic driver feedback"
+	help
+	  This option enables support for Haptic Driver Feedback.
+#endif
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

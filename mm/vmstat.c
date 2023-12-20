@@ -1470,6 +1470,19 @@ static void frag_show_print(struct seq_file *m, pg_data_t *pgdat,
 		 */
 		seq_printf(m, "%6lu ", data_race(zone->free_area[order].nr_free));
 	seq_putc(m, '\n');
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (zone_idx(zone) != ZONE_NORMAL)
+		return;
+
+	seq_printf(m, "Node %d, zone %8s ", pgdat->node_id, "ExtHpage");
+	for (order = 0; order < MAX_ORDER; ++order) {
+		struct ext_free_area *area;
+		area = &ext_free_area[order];
+		seq_printf(m, "%6lu ", data_race(area->nr_free));
+	}
+	seq_putc(m, '\n');
+#endif
 }
 
 /*
@@ -1522,6 +1535,60 @@ static void pagetypeinfo_showfree_print(struct seq_file *m,
 		}
 		seq_putc(m, '\n');
 	}
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (zone_idx(zone) != ZONE_NORMAL)
+		return;
+
+	for (mtype = 0; mtype < EXT_MIGRATE_TYPES; mtype++) {
+		seq_printf(m, "Node %4d, zone %8s, type %12s ",
+					pgdat->node_id,
+					zone->name,
+					ext_migratetype_names[mtype]);
+		for (order = 0; order < MAX_ORDER; ++order) {
+			unsigned long freecount = 0;
+			struct ext_free_area *area;
+			struct list_head *curr;
+			bool overflow = false;
+
+			area = &ext_free_area[order];
+
+			spin_lock(&ext_mt_spinlock);
+			list_for_each(curr, &area->free_list[mtype]) {
+				/*
+				 * Cap the free_list iteration because it might
+				 * be really large and we are under a spinlock
+				 * so a long time spent here could trigger a
+				 * hard lockup detector. Anyway this is a
+				 * debugging tool so knowing there is a handful
+				 * of pages of this order should be more than
+				 * sufficient.
+				 */
+				if (++freecount >= 100000) {
+					overflow = true;
+					break;
+				}
+			}
+			spin_unlock(&ext_mt_spinlock);
+			seq_printf(m, "%s%6lu ", overflow ? ">" : "", freecount);
+			spin_unlock_irq(&zone->lock);
+			cond_resched();
+			spin_lock_irq(&zone->lock);
+		}
+		seq_putc(m, '\n');
+	}
+
+	seq_printf(m, "Node %4d, zone %8s, type %12s ",
+			pgdat->node_id,
+			zone->name,
+			"ext_total");
+	for (order = 0; order < MAX_ORDER; ++order) {
+		struct ext_free_area *area;
+		area = &ext_free_area[order];
+		seq_printf(m, "%6lu ", area->nr_free);
+	}
+	seq_putc(m, '\n');
+#endif
 }
 
 /* Print out the free pages at each order for each migatetype */
@@ -1547,7 +1614,9 @@ static void pagetypeinfo_showblockcount_print(struct seq_file *m,
 	unsigned long start_pfn = zone->zone_start_pfn;
 	unsigned long end_pfn = zone_end_pfn(zone);
 	unsigned long count[MIGRATE_TYPES] = { 0, };
-
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	unsigned long ext_count[MIGRATE_TYPES] = { 0, };
+#endif
 	for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages) {
 		struct page *page;
 
@@ -1559,7 +1628,12 @@ static void pagetypeinfo_showblockcount_print(struct seq_file *m,
 			continue;
 
 		mtype = get_pageblock_migratetype(page);
-
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (is_migrate_ext(mtype)) {
+			ext_count[mtype - MIGRATE_TRIPORDER]++;
+			continue;
+		}
+#endif
 		if (mtype < MIGRATE_TYPES)
 			count[mtype]++;
 	}
@@ -1568,6 +1642,10 @@ static void pagetypeinfo_showblockcount_print(struct seq_file *m,
 	seq_printf(m, "Node %d, zone %8s ", pgdat->node_id, zone->name);
 	for (mtype = 0; mtype < MIGRATE_TYPES; mtype++)
 		seq_printf(m, "%12lu ", count[mtype]);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	for (mtype = 0; mtype < EXT_MIGRATE_TYPES; mtype++)
+		seq_printf(m, "%12lu ", ext_count[mtype]);
+#endif
 	seq_putc(m, '\n');
 }
 
@@ -1580,6 +1658,10 @@ static void pagetypeinfo_showblockcount(struct seq_file *m, void *arg)
 	seq_printf(m, "\n%-23s", "Number of blocks type ");
 	for (mtype = 0; mtype < MIGRATE_TYPES; mtype++)
 		seq_printf(m, "%12s ", migratetype_names[mtype]);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	for (mtype = 0; mtype < EXT_MIGRATE_TYPES; mtype++)
+		seq_printf(m, "%12s ", ext_migratetype_names[mtype]);
+#endif
 	seq_putc(m, '\n');
 	walk_zones_in_node(m, pgdat, true, false,
 		pagetypeinfo_showblockcount_print);

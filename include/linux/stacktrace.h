@@ -8,6 +8,17 @@
 struct task_struct;
 struct pt_regs;
 
+struct stackframe {
+ 	/*
+	 * FP member should hold R7 when CONFIG_THUMB2_KERNEL is enabled
+	 * and R11 otherwise.
+	 */
+	unsigned long fp;
+	unsigned long sp;
+	unsigned long lr;
+	unsigned long pc;
+};
+
 #ifdef CONFIG_ARCH_STACKWALK
 
 /**

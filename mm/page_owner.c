@@ -298,6 +298,9 @@ void pagetypeinfo_showmixedcount_print(struct seq_file *m,
 	unsigned long pfn, block_end_pfn;
 	unsigned long end_pfn = zone_end_pfn(zone);
 	unsigned long count[MIGRATE_TYPES] = { 0, };
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+       unsigned long ext_count[EXT_MIGRATE_TYPES] = { 0, };
+#endif
 	int pageblock_mt, page_mt;
 	int i;
 
@@ -349,6 +352,14 @@ void pagetypeinfo_showmixedcount_print(struct seq_file *m,
 
 			page_owner = get_page_owner(page_ext);
 			page_mt = gfp_migratetype(page_owner->gfp_mask);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			if (is_migrate_ext(pageblock_mt)) {
+				ext_count[pageblock_mt - MIGRATE_TRIPORDER]++;
+				pfn = block_end_pfn;
+				page_ext_put(page_ext);
+				break;
+			}
+#endif
 			if (pageblock_mt != page_mt) {
 				if (is_migrate_cma(pageblock_mt))
 					count[MIGRATE_MOVABLE]++;
@@ -369,6 +380,10 @@ ext_put_continue:
 	seq_printf(m, "Node %d, zone %8s ", pgdat->node_id, zone->name);
 	for (i = 0; i < MIGRATE_TYPES; i++)
 		seq_printf(m, "%12lu ", count[i]);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	for (i = 0; i < EXT_MIGRATE_TYPES; i++)
+		seq_printf(m, "%12lu ", ext_count[i]);
+#endif
 	seq_putc(m, '\n');
 }
 
@@ -439,7 +454,12 @@ print_page_owner(char __user *buf, size_t count, unsigned long pfn,
 			pfn,
 			migratetype_names[page_mt],
 			pfn >> pageblock_order,
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			is_migrate_ext(pageblock_mt) ? ext_migratetype_names[pageblock_mt - MIGRATE_TRIPORDER] :
+						       migratetype_names[pageblock_mt],
+#else
 			migratetype_names[pageblock_mt],
+#endif
 			&page->flags);
 
 	ret += stack_depot_snprint(handle, kbuf + ret, count - ret, 0);

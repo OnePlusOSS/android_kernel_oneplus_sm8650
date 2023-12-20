@@ -558,6 +558,16 @@ void qcom_sg_release(struct dma_buf *dmabuf)
 		return;
 
 	msm_dma_buf_freed(buffer);
+#if IS_ENABLED(CONFIG_QCOM_DMABUF_HEAPS_SYSTEM) && IS_ENABLED(CONFIG_OPLUS_FEATURE_MM_OSVELTE)
+	if (is_system_heap_deferred_free(buffer->free)) {
+		if (atomic64_sub_return(buffer->len, &qcom_system_heap_total) < 0) {
+			pr_info("warn: %s, total memory underflow, 0x%lx!!, reset as 0\n",
+				__func__, atomic64_read(&qcom_system_heap_total));
+			atomic64_set(&qcom_system_heap_total, 0);
+		}
+	}
+#endif /* CONFIG_QCOM_DMABUF_HEAPS_SYSTEM */
+
 	buffer->free(buffer);
 }
 

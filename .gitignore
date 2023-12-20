@@ -174,3 +174,8 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+drivers/soc/oplus
+include/soc/oplus/dfr
+include/soc/oplus/dft
+include/soc/oplus/boot

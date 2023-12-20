@@ -28,6 +28,8 @@ obj-$(CONFIG_GENERIC_ARCH_NUMA) += arch_numa.o
 obj-$(CONFIG_ACPI) += physical_location.o
 
 obj-y			+= test/
+obj-$(CONFIG_OPLUS_FW_UPDATE)	+= kernelFwUpdate/
+obj-$(CONFIG_TOUCHPANEL_NOTIFY)	+= touchpanel_notify/
 
 ccflags-$(CONFIG_DEBUG_DRIVER) := -DDEBUG
 

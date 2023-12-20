@@ -286,8 +286,13 @@ int input_boost_init(void)
 			return -ESRCH;
 		}
 
+#if IS_ENABLED(CONFIG_OPLUS_OMRG)
+		ret = freq_qos_add_request(&policy->constraints, req,
+						FREQ_QOS_MIN, policy->cpuinfo.min_freq);
+#else
 		ret = freq_qos_add_request(&policy->constraints, req,
 						FREQ_QOS_MIN, policy->min);
+#endif
 		if (ret < 0) {
 			pr_err("%s: Failed to add freq constraint (%d)\n",
 							__func__, ret);

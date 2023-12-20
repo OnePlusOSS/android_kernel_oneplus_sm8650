@@ -28,4 +28,53 @@ source "drivers/soc/ux500/Kconfig"
 source "drivers/soc/versatile/Kconfig"
 source "drivers/soc/xilinx/Kconfig"
 
+#ifdef OPLUS_FEATURE_MM_FEEDBACK
+source "drivers/soc/oplus/multimedia/Kconfig"
+#endif /* OPLUS_FEATURE_MM_FEEDBACK */
+
+#ifdef OPLUS_FEATURE_OCH
+source "kernel/oplus_cpu/cpufreq_health/Kconfig"
+#endif /* OPLUS_FEATURE_OCH */
+
+source "kernel/oplus_cpu/uad/Kconfig"
+
+#ifdef OPLUS_FEATURE_OMRG
+source "kernel/oplus_cpu/oplus_omrg/Kconfig"
+#endif /* OPLUS_FEATURE_OMRG */
+
+#ifdef OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING
+source "kernel/oplus_cpu/cpufreq_bouncing/Kconfig"
+#endif /* OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING */
+
+#ifdef OPLUS_FEATURE_ABNORMAL_FLAG
+source "kernel/oplus_cpu/oplus_overload/Kconfig"
+#endif /* OPLUS_FEATURE_ABNORMAL_FLAG */
+
+#ifdef OPLUS_FEATURE_BOOT
+source "drivers/soc/oplus/boot/cmdline_parser/Kconfig"
+source "drivers/soc/oplus/boot/bootloader_log/Kconfig"
+source "drivers/soc/oplus/boot/oplus_projectinfo/Kconfig"
+source "drivers/soc/oplus/boot/bootmode/Kconfig"
+source "drivers/soc/oplus/boot/htb/Kconfig"
+#endif /* OPLUS_FEATURE_BOOT */
+
+#ifdef OPLUS_FEATURE_QCOM_WATCHDOG
+source "drivers/soc/oplus/boot/qcom_watchdog/Kconfig"
+#endif
+
+#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+source "drivers/soc/oplus/mdmrst/Kconfig"
+#endif /*OPLUS_FEATURE_MODEM_MINIDUMP*/
+
 endmenu
+
+#ifdef OPLUS_FEATURE_TP_BASIC
+source "drivers/soc/oplus/device_info/Kconfig"
+#endif /* OPLUS_FEATURE_TP_BASIC */
+
+#ifdef OPLUS_FEATURE_DFT
+source "drivers/soc/oplus/dft/Kconfig"
+#endif /* OPLUS_FEATURE_DFT */
+
+source "drivers/soc/oplus/storage/Kconfig"
+

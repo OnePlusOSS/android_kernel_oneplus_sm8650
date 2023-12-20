@@ -763,6 +763,10 @@ static const struct clk_rpmh_desc clk_rpmh_kalama = {
 
 DEFINE_CLK_RPMH_ARC(pineapple, xo_pad, xo_pad_ao, "xo.lvl", 0x03, 2);
 DEFINE_CLK_RPMH_FIXED(pineapple, bi_tcxo, bi_tcxo_ao, xo_pad, xo_pad_ao, 2);
+//#ifdef OPLUS_FEATURE_DISPLAY
+/* add for gpio5 clk */
+DEFINE_CLK_RPMH_VRM_OPT(pineapple, div_clk1, div_clk1_ao, "clka11", 2);
+//#endif /* OPLUS_FEATURE_DISPLAY */
 DEFINE_CLK_RPMH_VRM_OPT(pineapple, rf_clk1, rf_clk1_ao, "clka1", 1);
 DEFINE_CLK_RPMH_VRM_OPT(pineapple, rf_clk2, rf_clk2_ao, "clka2", 1);
 DEFINE_CLK_RPMH_VRM_OPT(pineapple, rf_clk3, rf_clk3_ao, "clka3", 2);
@@ -777,6 +781,11 @@ static struct clk_hw *pineapple_rpmh_clocks[] = {
 	[RPMH_CXO_PAD_CLK_A]    = &pineapple_xo_pad_ao.hw,
 	[RPMH_CXO_CLK]          = &pineapple_bi_tcxo.hw,
 	[RPMH_CXO_CLK_A]        = &pineapple_bi_tcxo_ao.hw,
+//#ifdef OPLUS_FEATURE_DISPLAY
+	/* add for gpio5 clk */
+	[RPMH_DIV_CLK1]         = &pineapple_div_clk1.hw,
+	[RPMH_DIV_CLK1_A]       = &pineapple_div_clk1_ao.hw,
+//#endif /* OPLUS_FEATURE_DISPLAY */
 	[RPMH_LN_BB_CLK1]	= &pineapple_ln_bb_clk1.hw,
 	[RPMH_LN_BB_CLK1_A]	= &pineapple_ln_bb_clk1_ao.hw,
 	[RPMH_LN_BB_CLK2]	= &pineapple_ln_bb_clk2.hw,

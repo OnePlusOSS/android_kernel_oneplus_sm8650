@@ -21,6 +21,10 @@
 #include "walt.h"
 #include "trace.h"
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_pipeline.h>
+#endif
+
 /* mask of all CPUs with a fully pause claim outstanding */
 static cpumask_t cpus_paused_by_us = { CPU_BITS_NONE };
 
@@ -1847,6 +1851,10 @@ int core_ctl_init(void)
 		if (ret)
 			pr_warn("unable to create core ctl group: %d\n", ret);
 	}
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+	oplus_core_ctl_set_cluster_boost = core_ctl_set_cluster_boost;
+#endif
 
 	initialized = true;
 

@@ -68,6 +68,23 @@ enum migratetype {
 	MIGRATE_TYPES
 };
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+enum ext_migratetype {
+	MIGRATE_TRIPORDER = 6,
+	MIGRATE_QUADORDER = 7,
+	EXT_MIGRATE_TYPES = 2
+};
+
+static inline bool is_migrate_ext(int mt)
+{
+	return mt == MIGRATE_TRIPORDER || mt == MIGRATE_QUADORDER;
+}
+
+#define for_each_ext_migratetype_order(order, type) \
+	for (order = 0; order < MAX_ORDER; order++) \
+		for (type = 0; type < EXT_MIGRATE_TYPES; type++)
+#endif
+
 /* In mm/page_alloc.c; keep in sync also with show_migration_types() there */
 extern const char * const migratetype_names[MIGRATE_TYPES];
 
@@ -112,6 +129,31 @@ struct free_area {
 	struct list_head	free_list[MIGRATE_TYPES];
 	unsigned long		nr_free;
 };
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+struct ext_free_area {
+	struct list_head	free_list[EXT_MIGRATE_TYPES];
+	unsigned long		nr_free;
+};
+
+extern unsigned long ext_mt_order3_nr_early;
+extern unsigned long ext_mt_order3_nr_later;
+extern unsigned long ext_mt_order4_nr_free;
+
+static inline struct page *get_page_from_ext_free_area(struct ext_free_area *area,
+					    int migratetype)
+{
+	return list_first_entry_or_null(&area->free_list[migratetype - MIGRATE_TRIPORDER],
+					struct page, lru);
+}
+
+static inline bool ext_free_area_empty(struct ext_free_area *area, int migratetype)
+{
+	return list_empty(&area->free_list[migratetype - MIGRATE_TRIPORDER]);
+}
+
+extern struct ext_free_area ext_free_area[MAX_ORDER];
+#endif
 
 static inline struct page *get_page_from_free_area(struct free_area *area,
 					    int migratetype)

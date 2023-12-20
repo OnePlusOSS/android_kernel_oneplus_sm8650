@@ -140,3 +140,13 @@ obj-$(CONFIG_IO_MAPPING) += io-mapping.o
 obj-$(CONFIG_HAVE_BOOTMEM_INFO_NODE) += bootmem_info.o
 obj-$(CONFIG_GENERIC_IOREMAP) += ioremap.o
 obj-$(CONFIG_SHRINKER_DEBUG) += shrinker_debug.o
+obj-$(CONFIG_OPLUS_FEATURE_MM_OSVELTE) += mm_osvelte/
+obj-$(CONFIG_CONT_PTE_HUGEPAGE) += cont_pte_hugepage.o
+
+#ifdef OPLUS_KERNEL_MM
+obj-$(CONFIG_OPLUS_FEATURE_UXMEM_OPT) += oplus_bsp_uxmem_opt.o
+oplus_bsp_uxmem_opt-y := uxmem_opt.o
+
+obj-$(CONFIG_OPLUS_FEATURE_DYNAMIC_READAHEAD) += oplus_bsp_dynamic_readahead.o
+oplus_bsp_dynamic_readahead-y := dynamic_readahead.o
+#endif

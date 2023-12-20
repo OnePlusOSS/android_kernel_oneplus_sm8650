@@ -2367,7 +2367,10 @@ static struct inode *shmem_get_inode(struct super_block *sb, struct inode *dir,
 		INIT_LIST_HEAD(&info->swaplist);
 		simple_xattrs_init(&info->xattrs);
 		cache_no_acl(inode);
+
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 		mapping_set_large_folios(inode->i_mapping);
+#endif
 
 		switch (mode & S_IFMT) {
 		default:

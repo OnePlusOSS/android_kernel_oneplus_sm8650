@@ -937,4 +937,7 @@ source "drivers/leds/trigger/Kconfig"
 comment "Simple LED drivers"
 source "drivers/leds/simple/Kconfig"
 
+source "drivers/leds/aw2023/Kconfig"
+
+source "drivers/leds/aw20198/Kconfig"
 endif # NEW_LEDS

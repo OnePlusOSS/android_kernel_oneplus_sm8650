@@ -194,6 +194,10 @@ source "drivers/input/misc/Kconfig"
 
 source "drivers/input/rmi4/Kconfig"
 
+#ifdef OPLUS_FEATURE_UFF_FINGERPRINT
+#source "drivers/input/uff_fp_drivers/Kconfig"
+#endif /* OPLUS_FEATURE_UFF_FINGERPRINT */
+
 endif
 
 menu "Hardware I/O ports"

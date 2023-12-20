@@ -109,6 +109,9 @@ static unsigned long change_pte_range(struct mmu_gather *tlb,
 
 	flush_tlb_batched_pending(vma->vm_mm);
 	arch_enter_lazy_mmu_mode();
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+again_pte:
+#endif
 	do {
 		oldpte = *pte;
 		if (pte_present(oldpte)) {
@@ -166,6 +169,33 @@ static unsigned long change_pte_range(struct mmu_gather *tlb,
 					xchg_page_access_time(page,
 						jiffies_to_msecs(jiffies));
 			}
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			if (pte_cont(oldpte)) {
+				unsigned long next = pte_cont_addr_end(addr, end);
+				bool anon = vma_is_anonymous(vma);
+#if CONFIG_CHP_ABNORMAL_PTES_DEBUG
+				check_cont_pte_trans_huge(pte, CORRUPT_CONT_PTE_REASON_CH_PTE_RANGE);
+#endif
+
+				/* we let cow occur always on base pages for file pages */
+				if ((next - addr != HPAGE_CONT_PTE_SIZE) || (!anon && vma->vm_flags & PROT_WRITE)) {
+					__split_huge_cont_pte(vma, pte, addr, false, NULL, ptl);
+					/*
+					 * for anon hugepage, we have only dropped cont-bit in __split_huge_cont_pte
+					 * we need to traverse non-cont pte to change their permissions
+					 */
+					if (anon)
+						goto again_pte;
+				} else {
+					change_huge_cont_pte(vma, pte, addr, newprot, cp_flags);
+				}
+				/* "do while()" will do "pte++" and "addr + PAGE_SIZE" */
+				pte += (next - PAGE_SIZE - addr)/PAGE_SIZE;
+				addr = next - PAGE_SIZE;
+				continue;
+			}
+#endif
 
 			oldpte = ptep_modify_prot_start(vma, addr, pte);
 			ptent = pte_modify(oldpte, newprot);

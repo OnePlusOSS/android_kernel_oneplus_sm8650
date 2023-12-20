@@ -734,6 +734,10 @@ out:
 	return lruvec;
 }
 
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+struct lruvec *mem_cgroup_chp_page_lruvec(struct page *, struct pglist_data *);
+#endif
+
 /**
  * folio_lruvec - return lruvec for isolating/putting an LRU folio
  * @folio: Pointer to the folio.
@@ -745,8 +749,48 @@ static inline struct lruvec *folio_lruvec(struct folio *folio)
 	struct mem_cgroup *memcg = folio_memcg(folio);
 
 	VM_WARN_ON_ONCE_FOLIO(!memcg && !mem_cgroup_disabled(), folio);
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (ContPteExtLRUHugeFolio(folio))
+		return  mem_cgroup_chp_page_lruvec(folio_page(folio, 0), folio_pgdat(folio));
+#endif
 	return mem_cgroup_lruvec(memcg, folio_pgdat(folio));
 }
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+static inline struct lruvec *mem_cgroup_chp_lruvec(struct mem_cgroup *memcg,
+			struct pglist_data *pgdat)
+{
+	struct chp_lruvec *chp_lruvec = NULL;
+	struct lruvec *lruvec = NULL;
+
+	if (mem_cgroup_disabled()) {
+		chp_lruvec = (struct chp_lruvec *)pgdat->deferred_split_queue.split_queue_len;
+		CHP_BUG_ON(!chp_lruvec);
+		lruvec = &chp_lruvec->lruvec;
+		CHP_BUG_ON(!lruvec);
+		goto out;
+	}
+
+	if (!memcg)
+		memcg = root_mem_cgroup;
+
+	CHP_BUG_ON(MAX_NUMNODES > 1);
+	chp_lruvec = (struct chp_lruvec *)memcg->deferred_split_queue.split_queue_len;
+	CHP_BUG_ON(!chp_lruvec);
+	lruvec = &chp_lruvec->lruvec;
+	CHP_BUG_ON(!lruvec);
+out:
+	/*
+	 * Since a node can be onlined after the mem_cgroup was created,
+	 * we have to be prepared to initialize lruvec->pgdat here;
+	 * and if offlined then reonlined, we need to reinitialize it.
+	 */
+	if (unlikely(lruvec->pgdat != pgdat))
+		lruvec->pgdat = pgdat;
+	return lruvec;
+
+}
+#endif
 
 struct mem_cgroup *mem_cgroup_from_task(struct task_struct *p);
 
@@ -843,7 +887,12 @@ static inline struct mem_cgroup *lruvec_memcg(struct lruvec *lruvec)
 	if (mem_cgroup_disabled())
 		return NULL;
 
-	mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (is_chp_lruvec(lruvec))
+		mz = chp_lruvec_to_memcg_pn(lruvec);
+	else
+#endif
+		mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	return mz->memcg;
 }
 
@@ -900,6 +949,17 @@ unsigned long mem_cgroup_get_zone_lru_size(struct lruvec *lruvec,
 {
 	struct mem_cgroup_per_node *mz;
 
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (is_chp_lruvec(lruvec)) {
+		struct chp_lruvec *chp_lruvec = NULL;
+		unsigned long chp_zone_lru_size;
+
+		chp_lruvec = container_of(lruvec, struct chp_lruvec, lruvec);
+		chp_zone_lru_size = READ_ONCE(chp_lruvec->lru_zone_size[zone_idx][lru]);
+
+		return chp_zone_lru_size;
+	}
+#endif
 	mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	return READ_ONCE(mz->lru_zone_size[zone_idx][lru]);
 }
@@ -998,7 +1058,12 @@ static inline unsigned long lruvec_page_state(struct lruvec *lruvec,
 	if (mem_cgroup_disabled())
 		return node_page_state(lruvec_pgdat(lruvec), idx);
 
-	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (is_chp_lruvec(lruvec))
+		pn = chp_lruvec_to_memcg_pn(lruvec);
+	else
+#endif
+		pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	x = READ_ONCE(pn->lruvec_stats.state[idx]);
 #ifdef CONFIG_SMP
 	if (x < 0)
@@ -1017,7 +1082,12 @@ static inline unsigned long lruvec_page_state_local(struct lruvec *lruvec,
 	if (mem_cgroup_disabled())
 		return node_page_state(lruvec_pgdat(lruvec), idx);
 
-	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (is_chp_lruvec(lruvec))
+		pn = chp_lruvec_to_memcg_pn(lruvec);
+	else
+#endif
+		pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	for_each_possible_cpu(cpu)
 		x += per_cpu(pn->lruvec_stats_percpu->state[idx], cpu);
 #ifdef CONFIG_SMP
@@ -1270,6 +1340,14 @@ static inline
 void lruvec_memcg_debug(struct lruvec *lruvec, struct folio *folio)
 {
 }
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+static inline struct lruvec *mem_cgroup_chp_page_lruvec(struct page *page,
+						struct pglist_data *pgdat)
+{
+	return ((struct chp_lruvec *)pgdat->deferred_split_queue.split_queue_len)->lruvec;
+}
+#endif
 
 static inline struct mem_cgroup *parent_mem_cgroup(struct mem_cgroup *memcg)
 {
@@ -1599,6 +1677,10 @@ static inline struct lruvec *parent_lruvec(struct lruvec *lruvec)
 	memcg = parent_mem_cgroup(memcg);
 	if (!memcg)
 		return NULL;
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (is_chp_lruvec(lruvec))
+		return mem_cgroup_chp_lruvec(memcg, lruvec_pgdat(lruvec));
+#endif
 	return mem_cgroup_lruvec(memcg, lruvec_pgdat(lruvec));
 }
 
@@ -1622,8 +1704,14 @@ static inline void unlock_page_lruvec_irqrestore(struct lruvec *lruvec,
 static inline bool folio_matches_lruvec(struct folio *folio,
 		struct lruvec *lruvec)
 {
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
 	return lruvec_pgdat(lruvec) == folio_pgdat(folio) &&
-	       lruvec_memcg(lruvec) == folio_memcg(folio);
+		lruvec_memcg(lruvec) == folio_memcg(folio) &&
+		!(is_chp_lruvec(lruvec) ^ ContPteExtLRUHugeFolio(folio));
+#else
+	return lruvec_pgdat(lruvec) == folio_pgdat(folio) &&
+		lruvec_memcg(lruvec) == folio_memcg(folio);
+#endif
 }
 
 /* Don't lock again iff page's lruvec locked */

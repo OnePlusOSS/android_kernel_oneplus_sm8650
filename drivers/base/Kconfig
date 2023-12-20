@@ -230,4 +230,6 @@ config GENERIC_ARCH_NUMA
 	  Enable support for generic NUMA implementation. Currently, RISC-V
 	  and ARM64 use it.
 
+source "drivers/base/kernelFwUpdate/Kconfig"
+source "drivers/base/touchpanel_notify/Kconfig"
 endmenu

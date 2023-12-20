@@ -133,12 +133,41 @@ unsigned short swap_cgroup_record(swp_entry_t ent, unsigned short id,
 	pgoff_t offset = swp_offset(ent);
 	pgoff_t end = offset + nr_ents;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	bool bug = false;
+#endif
 	sc = lookup_swap_cgroup(ent, &ctrl);
 
 	spin_lock_irqsave(&ctrl->lock, flags);
 	old = sc->id;
 	for (;;) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (sc->id != old) {
+			pr_err("@@@FIXME: %s current:%s pid:%d tgid:%d sc->id:%d old:%d offset:%lx end:%lx\n", __func__,
+				current->comm, current->pid, current->tgid, sc->id, old, offset, end);
+			/*
+			 * While we can detect and fix all double mapped swap cases going through do_swap_page,
+			 * we can't really fix the below corner case which involves two contexts.
+			 * Buut fortunately we don't rely on MEMCG_SWAP.
+			 *
+			 *      T1                                       T2
+			 *  is_cont_pte_swap(sync=1) = y
+			 *
+			 *
+			 *                                     zap_pte_range(swap entries)
+			 *                                      -> free_swap_and_cache
+			 *                                       -> __mem_cgroup_uncharge_swap
+			 *  mem_cgroup_charge
+			 *    -> __mem_cgroup_uncharge_swap
+			 *      -> swap_cgroup_record
+			 *        ->oops
+			 */
+			if (sc->id != 0 && old != 0)
+				bug = true;
+		}
+#else
 		VM_BUG_ON(sc->id != old);
+#endif
 		sc->id = id;
 		offset++;
 		if (offset == end)

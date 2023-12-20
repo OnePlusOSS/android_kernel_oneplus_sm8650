@@ -269,8 +269,11 @@ static void discard_swap_cluster(struct swap_info_struct *si,
 }
 
 #ifdef CONFIG_THP_SWAP
-#define SWAPFILE_CLUSTER	HPAGE_PMD_NR
-
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+#define SWAPFILE_CLUSTER HPAGE_CONT_PTE_NR
+#else
+#define SWAPFILE_CLUSTER HPAGE_PMD_NR
+#endif
 #define swap_entry_size(size)	(size)
 #else
 #define SWAPFILE_CLUSTER	256
@@ -747,8 +750,20 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 	while (offset <= end) {
 		arch_swap_invalidate_page(si->type, offset);
 		frontswap_invalidate_page(si->type, offset);
-		if (swap_slot_free_notify)
-			swap_slot_free_notify(si->bdev, offset);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM
+                if(is_thp_swap(si)){
+                        //swap_slot_free_notify only when cluster is free.
+                        unsigned long index = offset / SWAPFILE_CLUSTER;
+                        if(swap_slot_free_notify && cluster_is_free(&si->cluster_info[index]))
+                                swap_slot_free_notify(si->bdev, index);
+                }else {
+                        if (swap_slot_free_notify)
+                                swap_slot_free_notify(si->bdev, offset);
+                }
+#else
+                if (swap_slot_free_notify)
+                        swap_slot_free_notify(si->bdev, offset);
+#endif
 		offset++;
 	}
 	clear_shadow_from_swap_cache(si->type, begin, end);
@@ -1046,6 +1061,33 @@ static void swap_free_cluster(struct swap_info_struct *si, unsigned long idx)
 	swap_range_free(si, offset, SWAPFILE_CLUSTER);
 }
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+bool thp_swap_is_free(void)
+{
+	bool ret = false;
+	int type = 0;
+	unsigned long tot, free;
+
+	spin_lock(&swap_lock);
+	for (type = 0; type < nr_swapfiles; type++) {
+		struct swap_info_struct *si = swap_info[type];
+
+		if (is_thp_swap(si)) {
+			if ((si->flags & SWP_USED) && !(si->flags & SWP_WRITEOK))
+				goto out;
+
+			free = si->pages - si->inuse_pages;
+			tot = si->pages;
+			ret = free > (tot >> 6);
+			goto out;
+		}
+	}
+out:
+	spin_unlock(&swap_lock);
+	return ret;
+}
+#endif
+
 int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_size)
 {
 	unsigned long size = swap_entry_size(entry_size);
@@ -1072,6 +1114,10 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_size)
 start_over:
 	node = numa_node_id();
 	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if ((entry_size == SWAPFILE_CLUSTER) ^ is_thp_swap(si))
+			continue;
+#endif
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
 		spin_unlock(&swap_avail_lock);
@@ -1107,6 +1153,9 @@ start_over:
 
 		spin_lock(&swap_avail_lock);
 nextsi:
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		goto done;
+#endif
 		/*
 		 * if we got here, it's likely that si was almost full before,
 		 * and since scan_swap_map_slots() can drop the si->lock,
@@ -1121,7 +1170,9 @@ nextsi:
 		if (plist_node_empty(&next->avail_lists[node]))
 			goto start_over;
 	}
-
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+done:
+#endif
 	spin_unlock(&swap_avail_lock);
 
 check_out:
@@ -3215,6 +3266,15 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		(p->flags & SWP_PAGE_DISCARD) ? "c" : "",
 		(frontswap_map) ? "FS" : "");
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/*
+	 * this is used to check whether add a normal swap device where is just
+	 * for base page.
+	 */
+	if (is_thp_swap(p))
+		CHP_BUG_ON(p->bdev->bd_disk->android_kabi_reserved1 != THP_SWAP_PRIO_MAGIC);
+	pr_info("swapon %s_swap\n", is_thp_swap(p) ? "chp" : "normal");
+#endif
 	mutex_unlock(&swapon_mutex);
 	atomic_inc(&proc_poll_event);
 	wake_up_interruptible(&proc_poll_wait);
