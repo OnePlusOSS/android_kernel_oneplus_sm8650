@@ -18,6 +18,10 @@
 #endif
 #endif /* CONFIG_OPLUS_ADD_CORE_CTRL_MASK */
 
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+#include "benchmark_test.h"
+#endif
+
 #ifdef CONFIG_HOTPLUG_CPU
 
 enum pause_type {
@@ -589,6 +593,11 @@ static void android_rvh_set_cpus_allowed_by_task(void *unused,
 	if (unlikely(walt_disabled))
 		return;
 
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (bm_set_cpus_allowed_by_task(cpu_valid_mask, new_mask, p, dest_cpu))
+		return;
+#endif
+
 	/* allow kthreads to change affinity regardless of halt status of dest_cpu */
 	if (p->flags & PF_KTHREAD)
 		return;
@@ -676,6 +685,10 @@ static void android_rvh_is_cpu_allowed(void *unused, struct task_struct *p, int 
 			*allowed = true;
 		}
 	}
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (test_benchmark_task(p))
+		*allowed = true;
+#endif
 }
 
 void walt_halt_init(void)

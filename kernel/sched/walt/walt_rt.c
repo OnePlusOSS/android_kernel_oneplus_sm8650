@@ -15,6 +15,10 @@
 #include <../kernel/oplus_cpu/sched/frame_boost/frame_group.h>
 #endif
 
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+#include "benchmark_test.h"
+#endif
+
 static DEFINE_PER_CPU(cpumask_var_t, walt_local_cpu_mask);
 DEFINE_PER_CPU(u64, rt_task_arrival_time) = 0;
 static bool long_running_rt_task_trace_rgstrd;
@@ -279,6 +283,11 @@ static inline bool walt_rt_task_fits_capacity(struct task_struct *p, int cpu)
 static inline bool walt_should_honor_rt_sync(struct rq *rq, struct task_struct *p,
 					     bool sync)
 {
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (unlikely(bm_enter()))
+		return false;
+#endif
+
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
 	sa_skip_rt_sync(rq, p, &sync);
 #endif
@@ -375,7 +384,21 @@ static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int c
 		goto unlock;
 	}
 
+#ifndef CONFIG_OPLUS_BENCHMARK_CPU
 	cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
+#else
+	if (unlikely(bm_enter())) {
+		cpumask_and(&lowest_mask_reduced, lowest_mask, &bm_normal_task_mask);
+	} else {
+		cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
+	}
+	bm_select_task_rq_rt(task, lowest_mask, ret, &target);
+	if (target != -1) {
+		*new_cpu = target;
+		rcu_read_unlock();
+		goto out;
+	}
+#endif
 	if (!cpumask_empty(&lowest_mask_reduced))
 		walt_rt_energy_aware_wake_cpu(task, &lowest_mask_reduced, ret, &target);
 	if (target == -1)
@@ -430,7 +453,20 @@ static void walt_rt_find_lowest_rq(void *unused, struct task_struct *task,
 		goto out;
 	}
 
+#ifndef CONFIG_OPLUS_BENCHMARK_CPU
 	cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
+#else
+	if (unlikely(bm_enter())) {
+		cpumask_and(&lowest_mask_reduced, lowest_mask, &bm_normal_task_mask);
+	} else {
+		cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
+	}
+	bm_select_task_rq_rt(task, &lowest_mask_reduced, ret, best_cpu);
+	if (*best_cpu != -1) {
+		goto out;
+	}
+#endif
+
 	if (!cpumask_empty(&lowest_mask_reduced))
 		walt_rt_energy_aware_wake_cpu(task, &lowest_mask_reduced, ret, best_cpu);
 	if (*best_cpu == -1)

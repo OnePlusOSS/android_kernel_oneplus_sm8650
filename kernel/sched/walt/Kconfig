@@ -45,3 +45,10 @@ config OPLUS_FEATURE_SUGOV_TL
 	depends on SCHED_WALT
 	help
 	  Add target_loads sysfs attr in cpufreq walt governor.
+
+config OPLUS_BENCHMARK_CPU
+	bool "oplus benchmark test for cpu"
+	default n
+	help
+	  Experiment with special cpu sched-policy in benchmark scene.
+	  To prove our new ideas and support product in the future.

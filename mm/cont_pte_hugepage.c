@@ -72,7 +72,7 @@ unsigned long cont_pte_pool_cma_size;
 static unsigned long cont_pte_sup_mem;
 static bool cont_pte_sup_prjname;
 /* true by default, false when cont_pte_hugepage=off in cmdline */
-static bool cont_pte_hugepage_enable = true;
+static bool cont_pte_hugepage_enable = false;
 bool cma_chunk_refill_ready;
 
 #define M2N(SZ) ((SZ) / HPAGE_CONT_PTE_SIZE)
@@ -2997,6 +2997,14 @@ static int proc_stat_show(struct seq_file *s, void *v)
 		}
 #endif /* CONFIG_CHP_ABNORMAL_PTES_DEBUG */
 
+#if CONFIG_CHP_LAZYFREE_DEBUG
+	seq_puts(s, "chp_lazyfree_debug_stat\n");
+	seq_printf(s, " chp_lazyfree_redirty_cnt: %llu\n",
+		   atomic64_read(&perf_stat.chp_lazyfree_redirty_cnt));
+	seq_printf(s, " chp_lazyfree_discard_cnt: %llu\n",
+		   atomic64_read(&perf_stat.chp_lazyfree_discard_cnt));
+#endif
+
 	return 0;
 }
 
@@ -3082,10 +3090,10 @@ early_param("cont_pte_sup_mem", cmdline_parse_cont_pte_sup_mem);
 static int __init cmdline_parse_prjname(char *p)
 {
 	static const char *prjs[] = {
-		"22803", "22881", "21001", "21201", "22091", "22227", "22825", "22877", NULL,
+		"22825", "22877", NULL,
 	};
 	static const char *ext_prjs[] = {
-		"22227", "21201", "22877", NULL, /* FIXME: add projects which don't support art alignment */
+		"22877", NULL, /* FIXME: add projects which don't support art alignment */
 	};
 
 	int i = 0;

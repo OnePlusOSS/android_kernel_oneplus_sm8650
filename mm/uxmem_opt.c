@@ -419,7 +419,9 @@ bool current_is_key_task(void)
 {
 	unsigned long ret = 0;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
 	trace_android_vh_si_meminfo_adjust((unsigned long *)OPLUS_MM_VH_CURRENT_IS_KEY, &ret);
+#endif
 	return (bool)ret;
 }
 

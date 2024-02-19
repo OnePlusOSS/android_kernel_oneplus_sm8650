@@ -156,6 +156,7 @@ def define_pineapple():
         "drivers/soc/qcom/dcvs/dynpf_scmi.ko",
         "drivers/soc/qcom/dcvs/memlat.ko",
         "drivers/soc/qcom/dcvs/mpam.ko",
+        "drivers/soc/qcom/dcvs/mpam_test.ko",
         "drivers/soc/qcom/dcvs/qcom-dcvs.ko",
         "drivers/soc/qcom/dcvs/qcom-pmu-lib.ko",
         "drivers/soc/qcom/dcvs/qcom_scmi_client.ko",

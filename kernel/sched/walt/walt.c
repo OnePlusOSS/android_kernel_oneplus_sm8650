@@ -39,6 +39,10 @@
 #include <linux/task_overload.h>
 #endif
 
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+#include "benchmark_test.h"
+#endif
+
 const char *task_event_names[] = {
 	"PUT_PREV_TASK",
 	"PICK_NEXT_TASK",
@@ -4645,12 +4649,16 @@ void fmax_uncap_checkpoint(int nr_big, u64 window_start, u32 wakeup_ctr_sum)
 		if (!fmax_uncap_timestamp) {
 			for (i = 0; i < num_sched_clusters; i++)
 				fmax_cap[SMART_FMAX_CAP][i] = FREQ_QOS_MAX_DEFAULT_VALUE;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_ABNORMAL_FLAG)
+			if (!(is_full_throttle_boost() || is_conservative_boost() || !sysctl_abnormal_enable)) {
+#else
 			if (!(is_full_throttle_boost() || is_conservative_boost())) {
+#endif
 				for (i = 0; i < num_sched_clusters; i++)
 					fmax_cap[SMART_FMAX_CAP][i] = fmax_es_cap[i];
 			}
-		}
 		fmax_uncap_timestamp = window_start;
+		}
 	} else if (fmax_uncap_timestamp &&
 			(window_start > fmax_uncap_timestamp + FMAX_CAP_HYSTERESIS)) {
 		for (int i = 0; i < num_sched_clusters; i++)
@@ -4861,6 +4869,9 @@ static void dec_rq_walt_stats(struct rq *rq, struct task_struct *p)
 
 static void android_rvh_wake_up_new_task(void *unused, struct task_struct *new)
 {
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	bm_wake_up_new_task(new);
+#endif
 	if (unlikely(walt_disabled))
 		return;
 	init_new_task_load(new);
@@ -5405,6 +5416,10 @@ static void register_walt_hooks(void)
 	register_trace_android_rvh_update_thermal_stats(android_rvh_update_thermal_stats, NULL);
 	register_trace_android_rvh_cgroup_force_kthread_migration(
 					walt_cgroup_force_kthread_migration, NULL);
+
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	benchmark_init();
+#endif
 }
 
 atomic64_t walt_irq_work_lastq_ws;

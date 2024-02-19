@@ -1197,17 +1197,20 @@ static int madvise_vma_behavior(struct vm_area_struct *vma,
 	case MADV_DONTNEED_LOCKED:
 #ifdef CONFIG_CONT_PTE_HUGEPAGE
 		if (vma_is_chp_anonymous(vma)) {
+			bool aligned = IS_ALIGNED(start, HPAGE_CONT_PTE_SIZE) && IS_ALIGNED((end - start), HPAGE_CONT_PTE_SIZE);
+
+			if (aligned)
+				return madvise_dontneed_free(vma, prev, start, end, behavior);
 			if (behavior == MADV_FREE) {
 #ifndef CONFIG_CONT_PTE_HUGEPAGE_ON_QEMU
-				chp_loge("madv_free vma:[0x%lx - 0x%lx] start:0x%lx len:0x%lx\n",
+				chp_log_dbg_ratelimited("madv_free vma:[0x%lx - 0x%lx] start:0x%lx len:0x%lx\n",
 						vma->vm_start, vma->vm_end, start,
 						end - start);
 				count_vm_chp_event(CHP_MADV_FREE);
 #endif
-			} else if (!IS_ALIGNED(start, HPAGE_CONT_PTE_SIZE) ||
-					!IS_ALIGNED((end - start), HPAGE_CONT_PTE_SIZE)) {
+			} else {
 #ifndef CONFIG_CONT_PTE_HUGEPAGE_ON_QEMU
-				chp_loge("madv_dontneed vma:[0x%lx - 0x%lx] start:0x%lx len:0x%lx\n",
+				chp_log_dbg_ratelimited("madv_dontneed vma:[0x%lx - 0x%lx] start:0x%lx len:0x%lx\n",
 						vma->vm_start, vma->vm_end, start,
 						end - start);
 				count_vm_chp_event(CHP_MADV_DONTNEED_UNALIGNED);

@@ -49,6 +49,7 @@
 #include <ufs/ufs_quirks.h>
 #include <ufs/ufshcd-crypto-qti.h>
 #include <../../../fs/proc/internal.h>
+#include <soc/qcom/socinfo.h>
 //#include "../core/ufshcd-priv.h"
 
 extern int ufshcd_query_descriptor_retry(struct ufs_hba *hba,
@@ -80,6 +81,12 @@ extern int ufshcd_query_descriptor_retry(struct ufs_hba *hba,
 
 #define UFS_QCOM_BER_TH_DEF_G1_G4	0
 #define UFS_QCOM_BER_TH_DEF_G5	3
+
+#define UFS_CPU_FREQ_MAX_SILVER  2035200
+#define UFS_CPU_FREQ_MAX_GOLD_TITANIUM	2707200
+#define UFS_CPU_FREQ_MAX_PRIME  2688000
+#define SOCINFO_8650  557
+
 /*
  * Default time window of PHY BER monitor in millisecond.
  * Can be overridden by MODULE CmdLine and MODULE sysfs node.
@@ -3361,6 +3368,15 @@ static int ufs_qcom_setup_qos(struct ufs_hba *hba)
 		}
 		host->cpu_info[i].min_cpu_scale_freq = policy->cpuinfo.min_freq;
 		host->cpu_info[i].max_cpu_scale_freq = policy->cpuinfo.max_freq;
+		//cut down ufs driving boost cpufreq on 8650, T/G core to 2.7G, P core to 2.68G, S core to 2.03G
+		if (SOCINFO_8650 == socinfo_get_id()){
+			if (policy->cpu == 2 || policy->cpu == 5)
+				host->cpu_info[i].max_cpu_scale_freq = UFS_CPU_FREQ_MAX_GOLD_TITANIUM;
+			else if (policy->cpu == 7)
+				host->cpu_info[i].max_cpu_scale_freq = UFS_CPU_FREQ_MAX_PRIME;
+			else if (policy->cpu == 0)
+				host->cpu_info[i].max_cpu_scale_freq = UFS_CPU_FREQ_MAX_SILVER;
+		}
 		cpufreq_cpu_put(policy);
 	}
 

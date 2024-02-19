@@ -815,7 +815,11 @@ static inline bool pcp_allowed_order(unsigned int order)
 
 static inline void free_the_page(struct page *page, unsigned int order)
 {
-	if (pcp_allowed_order(order))		/* Via pcp? */
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_EXT_MIGRATETYPE
+	if (pcp_allowed_order(order) && !is_migrate_ext(get_pageblock_migratetype(page))) /* Via pcp? */
+#else
+	if (pcp_allowed_order(order))	/* Via pcp? */
+#endif
 		free_unref_page(page, order);
 	else
 		__free_pages_ok(page, order, FPI_NONE);
@@ -5665,7 +5669,7 @@ retry:
 	/*
 	 * we have *so many* free extmigratetype, don't struggle with reclaim and compact
 	 */
-	if (!page && order == HPAGE_CONT_PTE_ORDER - 1 && allow_3order_use_extmigratetype_early()) {
+	if (!page && order == HPAGE_CONT_PTE_ORDER - 1 && (gfp_mask & __GFP_COMP) && allow_3order_use_extmigratetype_early()) {
 		pg_data_t *pgdat = NODE_DATA(0);
 		struct zone *zone = &pgdat->node_zones[ZONE_NORMAL];
 		page = NULL;
@@ -5704,7 +5708,7 @@ retry:
 	 * we have failed to get 3-order memory from normal buddy, let's
 	 * have a go in the ext 3order migratetype buddy
 	 */
-	if (!page && order == HPAGE_CONT_PTE_ORDER - 1 && allow_3order_use_extmigratetype_later()) {
+	if (!page && order == HPAGE_CONT_PTE_ORDER - 1 && (gfp_mask & __GFP_COMP) && allow_3order_use_extmigratetype_later()) {
 		pg_data_t *pgdat = NODE_DATA(0);
 		struct zone *zone = &pgdat->node_zones[ZONE_NORMAL];
 		page = NULL;

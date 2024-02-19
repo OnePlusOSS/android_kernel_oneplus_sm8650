@@ -6586,6 +6586,7 @@ static inline vm_fault_t wp_huge_pmd(struct vm_fault *vmf)
 
 static vm_fault_t create_huge_pud(struct vm_fault *vmf)
 {
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) &&			\
 	defined(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD)
 	struct vm_area_struct *vma = vmf->vma;
@@ -6600,6 +6601,7 @@ static vm_fault_t create_huge_pud(struct vm_fault *vmf)
 		return vma->vm_ops->huge_fault(vmf, PE_SIZE_PUD);
 	}
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+#endif
 	return VM_FAULT_FALLBACK;
 }
 

@@ -3129,7 +3129,9 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	enum lru_list lru;
 	bool balance_anon_file_reclaim = false;
 #if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_POOL_ASYNC_RECLAIM
-	bool chp_reclaim = !!(sc->gfp_mask & POOL_USER_ALLOC_MASK);
+#if !CONFIG_CONT_PTE_FILE_HUGEPAGE_DISABLE
+       bool chp_reclaim = !!(sc->gfp_mask & POOL_USER_ALLOC_MASK);
+#endif
 #endif
 
 	/* If we have no swap space, do not bother scanning anon folios. */
@@ -3214,6 +3216,7 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	denominator = ap + fp;
 out:
 #if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_POOL_ASYNC_RECLAIM
+#if !CONFIG_CONT_PTE_FILE_HUGEPAGE_DISABLE
 	/*
 	 * When the file hugepages is small,
 	 * the file hugepage is not reclaimed
@@ -3228,6 +3231,7 @@ out:
 			scan_balance = SCAN_ANON;
 		}
 	}
+#endif
 #endif
 
 	trace_android_vh_tune_scan_type(&scan_balance);

@@ -1820,6 +1820,12 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 					mmu_notifier_invalidate_range(mm,
 						address, address + PAGE_SIZE);
 					dec_mm_counter(mm, MM_ANONPAGES);
+#if CONFIG_CHP_LAZYFREE_DEBUG
+					if (ContPteHugeFolio(folio) &&
+					    ((page_to_pfn(subpage) &
+					      (HPAGE_CONT_PTE_NR - 1)) == HPAGE_CONT_PTE_NR - 1))
+						atomic64_inc(&perf_stat.chp_lazyfree_discard_cnt);
+#endif
 					goto discard;
 				}
 
@@ -1827,6 +1833,10 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 				 * If the folio was redirtied, it cannot be
 				 * discarded. Remap the page to page table.
 				 */
+#if CONFIG_CHP_LAZYFREE_DEBUG
+				if (ContPteHugeFolio(folio))
+					atomic64_inc(&perf_stat.chp_lazyfree_redirty_cnt);
+#endif
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				folio_set_swapbacked(folio);
 				ret = false;

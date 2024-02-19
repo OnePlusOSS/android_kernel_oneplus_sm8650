@@ -2419,10 +2419,12 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 	int err;
 	validate_mm_mt(mm);
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
 #if CONFIG_CHP_ABNORMAL_PTES_DEBUG
 	if (vma_is_chp_anonymous(vma) && !IS_ALIGNED(addr, HPAGE_CONT_PTE_SIZE)) {
 		commit_chp_abnormal_ptes_record(DOUBLE_MAP_REASON_SPLIT_VMA);
 	}
+#endif
 #endif
 
 	vma_start_write(vma);

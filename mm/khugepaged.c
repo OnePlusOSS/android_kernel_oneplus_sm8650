@@ -363,6 +363,9 @@ int hugepage_madvise(struct vm_area_struct *vma,
 		if (mm_has_pgste(vma->vm_mm))
 			return 0;
 #endif
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		return 0;
+#endif
 		*vm_flags &= ~VM_NOHUGEPAGE;
 		*vm_flags |= VM_HUGEPAGE;
 		/*
@@ -803,7 +806,11 @@ static int hpage_collapse_find_target_node(struct collapse_control *cc)
 static bool hpage_collapse_alloc_page(struct page **hpage, gfp_t gfp, int node,
 				      nodemask_t *nmask)
 {
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	*hpage = __alloc_pages(gfp, HPAGE_PMD_ORDER, node, nmask);
+#else
+	*hpage = NULL;
+#endif
 	if (unlikely(!*hpage)) {
 		count_vm_event(THP_COLLAPSE_ALLOC_FAILED);
 		return false;
@@ -2648,6 +2655,10 @@ int madvise_collapse(struct vm_area_struct *vma, struct vm_area_struct **prev,
 	BUG_ON(vma->vm_end < end);
 
 	*prev = vma;
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	return -EINVAL;
+#endif
 
 	if (!hugepage_vma_check(vma, vma->vm_flags, false, false, false))
 		return -EINVAL;

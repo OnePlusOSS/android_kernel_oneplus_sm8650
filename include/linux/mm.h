@@ -3760,6 +3760,7 @@ madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 #define CONFIG_NON_SPF_FAULT_RETRY_DEBUG 1
 #define CONFIG_CONT_PTE_FILE_HUGEPAGE_DISABLE 1
 #define CONFIG_CHP_ABNORMAL_PTES_DEBUG 1
+#define CONFIG_CHP_LAZYFREE_DEBUG 0
 
 #if CONFIG_POOL_ASYNC_RECLAIM
 #define CONFIG_CONT_PTE_HUGEPAGE_LRU	1
@@ -3912,6 +3913,13 @@ static inline char chp_loglvl_to_char(int l)
 		       CHP_TAG, current->tgid, current->pid,		\
 		       chp_loglvl_to_char(l), current->comm, __func__,  \
 		       __LINE__,  ##__VA_ARGS__);			\
+} while (0)
+
+#define chp_log_dbg_ratelimited(f, ...) do {				\
+	pr_debug_ratelimited("%s %5d %5d D %-16s: %s:%d "f,		\
+		  CHP_TAG, current->tgid, current->pid,			\
+		  current->comm, __func__,  				\
+		  __LINE__,  ##__VA_ARGS__);				\
 } while (0)
 
 #define chp_loge(f, ...)						\
@@ -4143,6 +4151,11 @@ struct cont_pte_huge_page_stat {
 	atomic64_t chp_abnormal_ptes_uid_cnt;
 	struct chp_abnormal_ptes_stat abps[CHP_ABMORMAL_PTES_SEQ];
 #endif
+#if CONFIG_CHP_LAZYFREE_DEBUG
+	atomic64_t chp_lazyfree_discard_cnt;
+	atomic64_t chp_lazyfree_redirty_cnt;
+#endif
+
 };
 
 extern struct cont_pte_huge_page_stat perf_stat;

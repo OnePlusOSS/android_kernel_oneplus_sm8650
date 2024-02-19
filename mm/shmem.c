@@ -1558,7 +1558,12 @@ static struct folio *shmem_alloc_hugefolio(gfp_t gfp,
 		return NULL;
 
 	shmem_pseudo_vma_init(&pvma, info, hindex);
+
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	folio = vma_alloc_folio(gfp, HPAGE_PMD_ORDER, &pvma, 0, true);
+#else
+	folio = NULL;
+#endif
 	shmem_pseudo_vma_destroy(&pvma);
 	if (!folio)
 		count_vm_event(THP_FILE_FALLBACK);
@@ -4126,9 +4131,11 @@ static ssize_t shmem_enabled_store(struct kobject *kobj,
 			huge != SHMEM_HUGE_NEVER && huge != SHMEM_HUGE_DENY)
 		return -EINVAL;
 
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	shmem_huge = huge;
 	if (shmem_huge > SHMEM_HUGE_DENY)
 		SHMEM_SB(shm_mnt->mnt_sb)->huge = shmem_huge;
+#endif
 	return count;
 }
 

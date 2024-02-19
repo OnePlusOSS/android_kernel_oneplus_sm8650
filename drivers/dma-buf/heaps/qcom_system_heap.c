@@ -245,6 +245,9 @@ static void dynamic_page_pool_refill(struct dynamic_page_pool *pool)
 	if (!pool->order)
 		return;
 
+	if (pool->order > 4)
+		gfp_refill &= ~__GFP_RECLAIM;
+
 	while (!dynamic_pool_fillmark_reached(pool) && dynamic_pool_refill_ok(pool)) {
 		page = alloc_pages(gfp_refill, pool->order);
 		if (!page)

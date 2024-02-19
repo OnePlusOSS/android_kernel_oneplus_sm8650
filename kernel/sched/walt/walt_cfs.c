@@ -34,6 +34,10 @@
 #include <../kernel/oplus_cpu/sched/frame_boost/frame_group.h>
 #endif
 
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+#include "benchmark_test.h"
+#endif
+
 static void create_util_to_cost_pd(struct em_perf_domain *pd)
 {
 	int util, cpu = cpumask_first(to_cpumask(pd->cpus));
@@ -1147,6 +1151,13 @@ walt_select_task_rq_fair(void *unused, struct task_struct *p, int prev_cpu,
 
 	if (unlikely(walt_disabled))
 		return;
+
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (unlikely(bm_enter())) {
+		bm_select_task_rq_fair(unused, p, prev_cpu, sd_flag, wake_flags, target_cpu);
+		return;
+	}
+#endif
 
 	sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 	sibling_count_hint = p->wake_q_count;
