@@ -556,8 +556,6 @@ inline int vma_expand(struct ma_state *mas, struct vm_area_struct *vma,
 	if (mas_preallocate(mas, vma, GFP_KERNEL))
 		goto nomem;
 
-	vma_start_write(vma);
-
 #ifdef CONFIG_CONT_PTE_HUGEPAGE
 	vma_adjust_cont_pte_trans_huge(vma, start, end, 0);
 #else

@@ -1245,7 +1245,7 @@ static int suspend_enabled_clocks_show(struct seq_file *s, void *unused)
 
 	struct suspend_enabled_clk *suspend_clk;
 	list_for_each_entry(suspend_clk, &suspend_clk_list, list) {
-		seq_printf(s, "%s: [%ld]\n", suspend_clk->clk_name, suspend_clk->clk_rate);
+		seq_printf(s, "%s: [%u]\n", suspend_clk->clk_name, suspend_clk->clk_rate);
 	}
 
 	return 0;

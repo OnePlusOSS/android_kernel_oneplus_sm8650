@@ -11,21 +11,11 @@
 #define TOP_CHILDS_BENCH  (7)
 #define TOP_CHILDS (TOP_CHILDS_NORMAL + TOP_CHILDS_BENCH)
 
-#define BM_CONTROL_SF "surfaceflinger"
-#define BM_CONTROL_OVERLAY_ENGINE "OverlayEngine_0"
 enum bm_task_type {
 	BENCH_NONE = 0,
 	BENCH_MAIN = 1,
 	BENCH_NORMAL = 2,
 	BENCH_MAX_TYPES
-};
-
-struct bm_control_task
-{
-	char comm[TASK_COMM_LEN];
-	int pid;
-	int backup_prio;
-	int backup_sched;
 };
 
 extern unsigned int sysctl_multi_thread;

@@ -309,6 +309,7 @@ def define_pineapple():
         "mm/mm_osvelte/oplus_bsp_mm_osvelte.ko",
         "drivers/soc/oplus/storage/common/storage_log/oplus_storage_log.ko",
         "drivers/soc/oplus/storage/common/oplus_uprobe/oplus_uprobe.ko",
+        "drivers/soc/oplus/power/subsys_sleep_monitor/oplus_subsys_sleep_monitor.ko",
     ]
 
     _pineapple_consolidate_in_tree_modules = _pineapple_in_tree_modules + [

@@ -3929,15 +3929,20 @@ static inline char chp_loglvl_to_char(int l)
 	chp_log(CHP_LOG_INFO, f, ##__VA_ARGS__)
 
 #define CHP_BUG_ON(condition) do {					\
-	if (unlikely(config_bug_on && condition)) BUG();		\
+	if (unlikely(config_bug_on && condition)) {		\
+		BUG();										\
+	} else if (condition) {							\
+		pr_err("[CHP_WARN_ON]%s:%d tgid:%d pid:%d comm:%s\n",	\
+			__func__, __LINE__, current->tgid,		\
+			current->pid, current->comm);			\
+		WARN_ON(1);									\
+	}												\
 } while (0)
 
 #define CHP_BUG_ON_EMERGENCY(condition) do {				\
 	if (unlikely(condition)) BUG();					\
 } while (0)
 /**************************************/
-
-#define UNALIGNED_CONT_PTE_WARN WARN_ON
 
 enum hpage_type {
 	HPAGE_POOL_CMA,

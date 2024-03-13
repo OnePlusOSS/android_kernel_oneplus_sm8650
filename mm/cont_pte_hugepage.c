@@ -720,7 +720,7 @@ void __free_cont_pte_hugepages(struct page *page)
 
 static inline bool is_64bit_libc_so(struct file *vm_file)
 {
-	if (unlikely(!vm_file))
+	if (unlikely(!vm_file || !vm_file->f_path.dentry))
 		return false;
 
 	/*
@@ -742,6 +742,9 @@ static inline bool is_64bit_libc_so(struct file *vm_file)
 	    strncmp(vm_file->f_path.dentry->d_parent->d_parent->d_name.name,
 		    LIBC_64BIT_PREFIX, sizeof(LIBC_64BIT_PREFIX) - 1) == 0)
 		return true;
+	else
+		chp_loge("invalid %s %s\n", NATIVE_HEAP,
+			 vm_file->f_path.dentry->d_name.name);
 	return false;
 }
 
@@ -783,23 +786,14 @@ enum chp_vma_type chp_handle_prctl_set_anon_name(const char __user *name,
 			return ret;
 
 		mmap_read_lock(mm);
-		/*
-		 * uid == 0 /system/lib64/bootstrap/libc.so
-		 * uid == 1000 /apex/com.android.runtime/lib64/bionic/libc.so
-		 */
 		vma = find_vma(mm, name_addr);
 		if (vma && !vma_is_anonymous(vma) &&
 		    is_64bit_libc_so(vma->vm_file)) {
 			current->mm->android_kabi_reserved1 |= name_addr;
 			ret = CHP_VMA_NATIVE;
-		} else {
-			if (vma && !(vma_is_anonymous(vma) && vma->vm_file))
-				chp_loge("vma %s ineligible %lx %s\n",
-					 NATIVE_HEAP,
-					 (unsigned long)name_addr,
-					 vma->vm_file->f_path.dentry->d_name.name);
 		}
 		mmap_read_unlock(mm);
+
 		return ret;
 	} else if (strcmp(DALVIK_MAIN_HEAP, kname) == 0) {
 		current->mm->android_kabi_reserved1 |= DALVIK_MAIN_HEAP_BIT;
@@ -840,7 +834,7 @@ bool handle_chp_ext_cmd(struct sysinfo *si)
 	case CHP_EXT_CMD_POOL_PAGES:
 		si->freehigh = huge_page_pool_count(pool, NR_HPAGE_POOL_TYPE) *
 			HPAGE_CONT_PTE_NR;
-		si->freehigh = min((int)si->freehigh / 2,
+		si->freehigh -= min((int)si->freehigh / 2,
 				   pool->high * HPAGE_CONT_PTE_NR);
 		break;
 	case CHP_EXT_CMD_POOL_TOTAL_CMA_COUNT:
@@ -1498,7 +1492,7 @@ void cont_pte_set_huge_pte_clean(struct mm_struct *mm, unsigned long addr,
 	 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
 	 */
 	if (!pte_present(pte))
-		UNALIGNED_CONT_PTE_WARN(1);
+		CHP_BUG_ON(1);
 	else
 #endif
 	pte = pte_mkold(pte);
@@ -3135,7 +3129,7 @@ void __init cont_pte_cma_reserve(void)
 								CONT_PTE_CMA_CHUNK_SIZE);
 			}
 		} else {
-			cont_pte_pool_cma_size = ALIGN_DOWN(phys_mem_sub_reserved_size * 1 / 4,
+			cont_pte_pool_cma_size = ALIGN_DOWN(phys_mem_sub_reserved_size * 1 / 4 + SZ_512M,
 							CONT_PTE_CMA_CHUNK_SIZE);
 		}
 	}
@@ -3353,14 +3347,14 @@ static int __init proc_fs_pte_huge_page_init(void)
 	if (!root_dir)
 		return -ENOMEM;
 
-	proc_create_single("stat", 0, root_dir, proc_stat_show);
-	proc_create_single("csv_stat", 0, root_dir, proc_csv_stat_show);
+	proc_create_single("stat", 0400, root_dir, proc_stat_show);
+	proc_create_single("csv_stat", 0400, root_dir, proc_csv_stat_show);
 #if CONFIG_CONT_PTE_HUGEPAGE_DEBUG
-	proc_create_single("fault_around_stat", 0, root_dir, proc_fault_around_stat_show);
+	proc_create_single("fault_around_stat", 0400, root_dir, proc_fault_around_stat_show);
 #endif
 
 #if CONFIG_POOL_ASYNC_RECLAIM
-	proc_create_single("pool_async_reclaim_stat", 0, root_dir, proc_pool_async_reclaim_stat_show);
+	proc_create_single("pool_async_reclaim_stat", 0400, root_dir, proc_pool_async_reclaim_stat_show);
 #endif
 
 	chp_kobj = kobject_create_and_add("chp", mm_kobj);

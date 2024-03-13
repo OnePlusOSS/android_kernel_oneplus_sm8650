@@ -3953,6 +3953,13 @@ void free_unref_page(struct page *page, unsigned int order)
 			free_one_page(page_zone(page), page, pfn, order, migratetype, FPI_NONE);
 			return;
 		}
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_EXT_MIGRATETYPE
+		if (unlikely(is_migrate_ext(migratetype))) /* Via pcp? */ {
+			free_one_page(page_zone(page), page, pfn, order, migratetype, FPI_NONE);
+			return;
+		}
+#endif
+
 		migratetype = MIGRATE_MOVABLE;
 	}
 
@@ -3998,6 +4005,13 @@ void free_unref_page_list(struct list_head *list)
 			free_one_page(page_zone(page), page, pfn, 0, migratetype, FPI_NONE);
 			continue;
 		}
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_EXT_MIGRATETYPE
+		if (unlikely(is_migrate_ext(migratetype))) /* Via pcp? */ {
+			list_del(&page->lru);
+			free_one_page(page_zone(page), page, pfn, 0, migratetype, FPI_NONE);
+			continue;
+		}
+#endif
 	}
 
 	list_for_each_entry_safe(page, next, list, lru) {

@@ -5756,6 +5756,8 @@ static long richtap_file_unlocked_ioctl(struct file *file, unsigned int cmd, uns
 			dev_err(chip->dev, "aac RichTap get f0 error, ret=%d\n", ret);
 			break;
 		}
+		tmp = tmp * 10;
+		dev_err(chip->dev, "aac RichTap get f0 %d\n", tmp);
 		if (copy_to_user((void __user *)arg, &tmp, sizeof(uint32_t)))
 			ret = -EFAULT;
 		break;

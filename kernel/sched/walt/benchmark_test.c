@@ -12,6 +12,7 @@
 
 #include "../sched.h"
 #include "benchmark_test.h"
+#include "walt.h"
 
 #define TRACE_DEBUG (0)
 #define CGROUP_TOP_APP (4)
@@ -19,9 +20,6 @@
 unsigned int sysctl_multi_thread;
 struct cpumask bm_normal_task_mask;
 struct cpumask top_backup_mask;
-
-struct bm_control_task bm_ctl_sf;
-struct bm_control_task bm_ctl_ol;
 
 /* pid of top main control thread */
 atomic_t top_pid = ATOMIC_INIT(0);
@@ -57,8 +55,7 @@ int test_benchmark_task(struct task_struct *p)
 	return BENCH_NONE;
 }
 
-void bm_wake_up_new_task(struct task_struct *new)
-{
+void bm_wake_up_new_task(struct task_struct *new) {
 	struct cgroup_subsys_state *css;
 
 	if (likely(!bm_enter()))
@@ -154,56 +151,6 @@ static void bm_set_cpus_allowed_comm(void *unused, struct task_struct *p, const 
 	}
 }
 
-static void find_out_big_task_rt(struct task_struct *p)
-{
-	/* Find out those target rt and record them! */
-	if (likely(p->prio >= MAX_RT_PRIO))
-		return;
-
-	if ((bm_ctl_ol.pid != p->pid) &&
-			!strncmp(p->comm, BM_CONTROL_OVERLAY_ENGINE, TASK_COMM_LEN)) {
-		strscpy_pad(bm_ctl_ol.comm, p->comm, sizeof(p->comm));
-		bm_ctl_ol.backup_sched = 1;
-		bm_ctl_ol.backup_prio = p->prio;
-		bm_ctl_ol.pid = p->pid;
-#if TRACE_DEBUG
-		trace_printk("comm=%-16s(%-16s) pid=%d prio=%d\n",
-			p->comm, bm_ctl_ol.comm, p->pid, p->prio);
-#endif
-		return;
-	}
-
-	if ((bm_ctl_sf.pid != p->pid) && (p->pid == p->tgid) &&
-			!strncmp(p->comm, BM_CONTROL_SF, TASK_COMM_LEN)) {
-		strscpy_pad(bm_ctl_sf.comm, p->comm, sizeof(p->comm));
-		bm_ctl_sf.backup_sched = 1;
-		bm_ctl_sf.backup_prio = p->prio;
-		bm_ctl_sf.pid = p->pid;
-#if TRACE_DEBUG
-		trace_printk("comm=%-16s(%-16s) pid=%d prio=%d\n",
-			p->comm, bm_ctl_sf.comm, p->pid, p->prio);
-#endif
-		return;
-	}
-}
-
-static void bonus_benchmark_task(struct task_struct *p)
-{
-	struct sched_entity *se = &p->se;
-	struct cfs_rq *cfs_rq = task_cfs_rq(p);
-
-	if (unlikely(test_benchmark_task(p)))
-		se->vruntime = cfs_rq->min_vruntime;
-}
-
-void bm_scheduler_tick(struct rq *rq)
-{
-	rcu_read_lock();
-	find_out_big_task_rt(rq->curr);
-	bonus_benchmark_task(rq->curr);
-	rcu_read_unlock();
-}
-
 void bm_select_task_rq_fair(void *unused, struct task_struct *p,
 	int prev_cpu, int sd_flag, int wake_flags, int *new_cpu)
 {
@@ -219,7 +166,8 @@ void bm_select_task_rq_fair(void *unused, struct task_struct *p,
 		return;
 
 	for_each_cpu(i, &bm_normal_task_mask) {
-		bool valid = cpumask_test_cpu(i, p->cpus_ptr) && cpu_active(i);
+		bool valid = cpumask_test_cpu(i, p->cpus_ptr) &&
+						cpu_active(i) && !cpu_halted(i);
 
 		if (valid && cpu_rq(i)->nr_running < lowest_nr) {
 			lowest_nr_cpu = i;
@@ -251,8 +199,9 @@ void bm_select_task_rq_rt(struct task_struct *p, struct cpumask *lowest_mask,
 	if (is_migration_disabled(p))
 		return;
 
-	for_each_cpu(i, lowest_mask) {
-		bool valid = cpumask_test_cpu(i, p->cpus_ptr) && cpu_active(i);
+	for_each_cpu_and(i, lowest_mask, &bm_normal_task_mask) {
+		bool valid = cpumask_test_cpu(i, p->cpus_ptr) &&
+						cpu_active(i) && !cpu_halted(i);
 
 		if (valid && cpu_rq(i)->nr_running < lowest_nr) {
 			lowest_nr_cpu = i;
@@ -269,38 +218,6 @@ void bm_select_task_rq_rt(struct task_struct *p, struct cpumask *lowest_mask,
 #endif
 }
 
-static void set_control_task_sched_param(struct bm_control_task *ct, bool restore)
-{
-	struct sched_param param;
-	int ret;
-
-	if (ct->pid != 0) {
-		struct task_struct *p;
-
-		rcu_read_lock();
-		p = find_task_by_vpid(ct->pid);
-		if (p != NULL)
-			get_task_struct(p);
-		rcu_read_unlock();
-
-		if (p == NULL)
-			return;
-
-		if (!restore) {
-			param.sched_priority = 0;
-			ret = sched_setscheduler_nocheck(p, SCHED_NORMAL, &param);
-		} else {
-			param.sched_priority = MAX_RT_PRIO - 1 - ct->backup_prio;
-			ret = sched_setscheduler_nocheck(p, ct->backup_sched ? SCHED_FIFO : SCHED_NORMAL, &param);
-		}
-#if TRACE_DEBUG
-		trace_printk("comm=%-12s pid=%d tgid=%d prio=%d ret=%d\n",
-			p->comm, p->pid, p->tgid, p->prio, ret);
-#endif
-		put_task_struct(p);
-	}
-}
-
 static int proc_multi_thread_handler(struct ctl_table *table,
 	int write, void __user *buffer, size_t *lenp,
 	loff_t *ppos)
@@ -312,8 +229,6 @@ static int proc_multi_thread_handler(struct ctl_table *table,
 		goto out;
 
 	if (sysctl_multi_thread) {
-		set_control_task_sched_param(&bm_ctl_sf, false);
-		set_control_task_sched_param(&bm_ctl_ol, false);
 	} else {
 		/* Notify we have leave BenchMark(Multi-Threads), restore here */
 		pid = atomic_read(&top_pid);
@@ -344,9 +259,6 @@ static int proc_multi_thread_handler(struct ctl_table *table,
 		atomic_set(&top_pid, 0);
 		atomic_set(&top_childs, 0);
 		memset(top_concur_tasks, 0, sizeof(top_concur_tasks));
-
-		set_control_task_sched_param(&bm_ctl_sf, true);
-		set_control_task_sched_param(&bm_ctl_ol, true);
 	}
 
 out:
@@ -402,9 +314,6 @@ void benchmark_init(void)
 	cpumask_set_cpu(1, &bm_normal_task_mask);
 	cpumask_set_cpu(2, &bm_normal_task_mask);
 	cpumask_set_cpu(3, &bm_normal_task_mask);
-
-	memset(&bm_ctl_sf, 0, sizeof(struct bm_control_task));
-	memset(&bm_ctl_ol, 0, sizeof(struct bm_control_task));
 
 	ret = register_trace_android_rvh_set_cpus_allowed_comm(bm_set_cpus_allowed_comm, NULL);
 	if (ret)

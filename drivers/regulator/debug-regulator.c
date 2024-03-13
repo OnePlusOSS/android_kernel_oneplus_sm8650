@@ -704,8 +704,10 @@ static void regulator_debug_print_enabled(struct regulator_dev *rdev)
 				suspend_consumer->max_uV        = reg->voltage[PM_SUSPEND_ON].max_uV;
 				suspend_consumer->uA_load       = reg->uA_load;
 
-				list_add(&suspend_consumer->list, &suspend_reg->enabled_consumer_list);
-				suspend_consumer_cnt++;
+				if(suspend_reg) {
+					list_add(&suspend_consumer->list, &suspend_reg->enabled_consumer_list);
+					suspend_consumer_cnt++;
+				}
 			}
 		}
 #endif

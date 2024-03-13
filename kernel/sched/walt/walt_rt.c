@@ -384,19 +384,15 @@ static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int c
 		goto unlock;
 	}
 
-#ifndef CONFIG_OPLUS_BENCHMARK_CPU
 	cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
-#else
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
 	if (unlikely(bm_enter())) {
-		cpumask_and(&lowest_mask_reduced, lowest_mask, &bm_normal_task_mask);
-	} else {
-		cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
-	}
-	bm_select_task_rq_rt(task, lowest_mask, ret, &target);
-	if (target != -1) {
-		*new_cpu = target;
-		rcu_read_unlock();
-		goto out;
+		bm_select_task_rq_rt(task, lowest_mask, ret, &target);
+		if (target != -1) {
+			*new_cpu = target;
+			rcu_read_unlock();
+			goto out;
+		}
 	}
 #endif
 	if (!cpumask_empty(&lowest_mask_reduced))
@@ -453,17 +449,13 @@ static void walt_rt_find_lowest_rq(void *unused, struct task_struct *task,
 		goto out;
 	}
 
-#ifndef CONFIG_OPLUS_BENCHMARK_CPU
 	cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
-#else
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
 	if (unlikely(bm_enter())) {
-		cpumask_and(&lowest_mask_reduced, lowest_mask, &bm_normal_task_mask);
-	} else {
-		cpumask_and(&lowest_mask_reduced, lowest_mask, &wts->reduce_mask);
-	}
-	bm_select_task_rq_rt(task, &lowest_mask_reduced, ret, best_cpu);
-	if (*best_cpu != -1) {
-		goto out;
+		bm_select_task_rq_rt(task, &lowest_mask_reduced, ret, best_cpu);
+		if (*best_cpu != -1) {
+			goto out;
+		}
 	}
 #endif
 

@@ -997,7 +997,7 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
 	 */
 	if (!pte_present(pte))
-		UNALIGNED_CONT_PTE_WARN(1);
+		CHP_BUG_ON(1);
 	else
 #endif
 	pte = pte_mkold(pte);
@@ -1064,7 +1064,7 @@ out_zero_page:
 	 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
 	 */
 	if (!pte_present(pte))
-		UNALIGNED_CONT_PTE_WARN(1);
+		CHP_BUG_ON(1);
 	else
 #endif
 	pte = pte_mkold(pte);
@@ -3813,7 +3813,6 @@ reuse:
 
 		entry = pte_mkyoung(ptep_get(ptep));
 		entry = maybe_mkwrite(pte_mkdirty(entry), vmf->vma);
-		cont_pte_huge_ptep_get_and_clear(vmf->vma->vm_mm, haddr, ptep);
 		cont_pte_set_huge_pte_at(vmf->vma->vm_mm, haddr, ptep, entry);
 
 		count_vm_event(PGREUSE);
@@ -5353,6 +5352,8 @@ alloc_page_done:
 						mmap_read_unlock(vma->vm_mm);
 				}
 
+				if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+					vma_end_read(vmf->vma);
 				ret = VM_FAULT_RETRY;
 				goto out_nomap;
 			} else {
@@ -5411,6 +5412,8 @@ alloc_page_done:
 					mmap_read_unlock(vma->vm_mm);
 			}
 
+			if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+				vma_end_read(vmf->vma);
 			ret = VM_FAULT_RETRY;
 			goto out_nomap;
 		}

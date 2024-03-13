@@ -583,7 +583,7 @@ skip:
 			 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
 			 */
 			if (!pte_present(ptent))
-				UNALIGNED_CONT_PTE_WARN(1);
+				CHP_BUG_ON(1);
 			else
 #endif
 			ptent = pte_mkold(ptent);
@@ -867,7 +867,7 @@ out_cont:
 			 * -2-3-8-9-10-11-8-9-10-11 for a hugepage.
 			 */
 			if (!pte_present(ptent))
-				UNALIGNED_CONT_PTE_WARN(1);
+				CHP_BUG_ON(1);
 			else
 #endif
 			ptent = pte_mkold(ptent);
