@@ -374,6 +374,15 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 	if (fatal_signal_pending(current))
 		return -EINTR;
 
+#ifdef CONFIG_OPLUS_FEATURE_ABORT_MM
+	/* Abort madvise when receive SIGUSR2 */
+	if (unlikely(sigismember(&current->pending.signal, SIGUSR2) ||
+		sigismember(&current->signal->shared_pending.signal, SIGUSR2))) {
+		pr_debug_ratelimited("abort madvise\n");
+		return -EINTR;
+	}
+#endif
+
 	pageout_anon_only_filter = pageout && !vma_is_anonymous(vma) &&
 					!can_do_file_pageout(vma);
 
@@ -770,8 +779,8 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 * deactivate all pages.
 		 */
 		if (folio_test_large(folio)) {
-			if (folio_mapcount(folio) != 1)
-				goto out;
+			if (folio_estimated_sharers(folio) != 1)
+				break;
 #ifdef CONFIG_CONT_PTE_HUGEPAGE
 			if (!pte_cont(ptent))
 				continue;

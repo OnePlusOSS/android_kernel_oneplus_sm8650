@@ -9,7 +9,11 @@
 #include <linux/clk.h>
 #include <linux/interconnect-provider.h>
 #include <linux/module.h>
-#include <dt-bindings/interconnect/qcom,icc.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+#include <linux/slab.h>
 
 #include "icc-rpm.h"
 #include "qnoc-qos-rpm.h"
@@ -151,30 +155,32 @@ int qcom_icc_rpm_set(struct icc_node *src, struct icc_node *dst)
 		}
 	}
 
-	for (i = 0; i < RPM_NUM_CXT; i++) {
-		if (qp->bus_clk_cur_rate[i] != bus_clk_rate[i]) {
-			if (qp->keepalive && i == RPM_ACTIVE_CXT) {
-				if (qp->init)
-					ret = clk_set_rate(qp->bus_clks[i].clk,
-							RPM_CLK_MAX_LEVEL);
-				else if (bus_clk_rate[i] == 0)
-					ret = clk_set_rate(qp->bus_clks[i].clk,
-							RPM_CLK_MIN_LEVEL);
-				else
-					ret = clk_set_rate(qp->bus_clks[i].clk,
-							bus_clk_rate[i]);
-			} else {
-				ret = clk_set_rate(qp->bus_clks[i].clk,
-							bus_clk_rate[i]);
-			}
+regmap_done:
+	ret = devm_clk_bulk_get(dev, qp->num_clks, qp->bus_clks);
+	if (ret)
+		return ret;
 
-			if (ret) {
-				pr_err("%s clk_set_rate error: %d\n",
-					qp->bus_clks[i].id, ret);
-				return ret;
-			}
+	ret = clk_bulk_prepare_enable(qp->num_clks, qp->bus_clks);
+	if (ret)
+		return ret;
 
-			qp->bus_clk_cur_rate[i] = bus_clk_rate[i];
+	provider = &qp->provider;
+	provider->dev = dev;
+	provider->set = qcom_icc_set;
+	provider->pre_aggregate = qcom_icc_pre_bw_aggregate;
+	provider->aggregate = qcom_icc_bw_aggregate;
+	provider->xlate_extended = qcom_icc_xlate_extended;
+	provider->data = data;
+
+	icc_provider_init(provider);
+
+	for (i = 0; i < num_nodes; i++) {
+		size_t j;
+
+		node = icc_node_create(qnodes[i]->id);
+		if (IS_ERR(node)) {
+			ret = PTR_ERR(node);
+			goto err_remove_nodes;
 		}
 	}
 

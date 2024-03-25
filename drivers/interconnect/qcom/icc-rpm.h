@@ -104,6 +104,11 @@ struct qcom_icc_node {
 struct qcom_icc_desc {
 	struct qcom_icc_node **nodes;
 	size_t num_nodes;
+	const char * const *clocks;
+	size_t num_clocks;
+	enum qcom_icc_type type;
+	const struct regmap_config *regmap_cfg;
+	unsigned int qos_offset;
 };
 
 #define DEFINE_QNODE(_name, _id, _buswidth, _mas_rpm_id, _slv_rpm_id,	\

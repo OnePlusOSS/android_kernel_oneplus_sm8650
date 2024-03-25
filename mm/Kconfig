@@ -1256,6 +1256,12 @@ config OPLUS_FEATURE_DYNAMIC_READAHEAD
 	depends on OPLUS_FEATURE_UXMEM_OPT
 	help
 	  This driver used for dynamically tuning filemap readahead for performance.
+
+config OPLUS_FEATURE_ABORT_MM
+	tristate "enable abort_mm"
+	default y
+	help
+	  This feature allow user to abort madvise or compaction.
 #endif
 
 endmenu

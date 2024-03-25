@@ -206,7 +206,6 @@ free_metadata:
 }
 EXPORT_SYMBOL_GPL(qcom_mdt_read_metadata);
 
-
 static int __qcom_mdt_load(struct device *dev, const struct firmware *fw, const char *firmware,
 			   int pas_id, void *mem_region, phys_addr_t mem_phys, size_t mem_size,
 			   phys_addr_t *reloc_base, bool pas_init, bool dma_phys_below_32b,

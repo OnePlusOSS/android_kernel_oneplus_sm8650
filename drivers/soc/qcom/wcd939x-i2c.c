@@ -111,12 +111,13 @@ static struct kobj_attribute wcd_usbss_standby_enable_attribute =
 
 #if 1 //OPLUS_BUG_COMPATIBILITY
 #define WCD_USBSS_PM_WAIT_RETRY_TIME_MAX 100
+#define WCD_USBSS_PM_RUNTIME_RESUME_CNT 200
 static int wcd_usbss_pm_runtime_resume_and_wait(struct device *dev)
 {
 	int ret = 0;
 	int retry = 0;
 
-	for (retry = 0; retry < WCD_USBSS_PM_WAIT_RETRY_TIME_MAX; retry++) {
+	for (retry = 0; retry < WCD_USBSS_PM_RUNTIME_RESUME_CNT; retry++) {
 		ret = pm_runtime_resume_and_get(dev);
 		if (ret == 0) {
 			break;
@@ -125,11 +126,11 @@ static int wcd_usbss_pm_runtime_resume_and_wait(struct device *dev)
 			dev_info(dev, "%s: pm_runtime_resume_and_get return %d, retry\n",
 					__func__, ret);
 		}
-		usleep_range(2000, 2020);
+		usleep_range(5000, 5100);
 	}
 
 //#if IS_ENABLED(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)
-	if (retry > 5) {
+	if (ret < 0) {
 		dev_info(dev, "%s: ret %d, retry %d\n", __func__, ret, retry);
 		mm_fb_audio_kevent_named(OPLUS_AUDIO_EVENTID_HEADSET_DET, MM_FB_KEY_RATELIMIT_5MIN, \
 			"pm_runtime_resume_and_get failed retry %d, ret %d", retry, ret);

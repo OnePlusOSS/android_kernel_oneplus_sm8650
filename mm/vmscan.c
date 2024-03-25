@@ -76,6 +76,10 @@
 #include <trace/hooks/mm.h>
 #endif
 
+EXPORT_TRACEPOINT_SYMBOL_GPL(mm_vmscan_direct_reclaim_begin);
+EXPORT_TRACEPOINT_SYMBOL_GPL(mm_vmscan_direct_reclaim_end);
+EXPORT_TRACEPOINT_SYMBOL_GPL(mm_vmscan_kswapd_wake);
+
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
 	unsigned long nr_to_reclaim;
@@ -1961,6 +1965,16 @@ retry:
 			}
 		}
 
+		/*
+		 * Folio is unmapped now so it cannot be newly pinned anymore.
+		 * No point in trying to reclaim folio if it is pinned.
+		 * Furthermore we don't want to reclaim underlying fs metadata
+		 * if the folio is pinned and thus potentially modified by the
+		 * pinning process as that may upset the filesystem.
+		 */
+		if (folio_maybe_dma_pinned(folio))
+			goto activate_locked;
+
 		mapping = folio_mapping(folio);
 		if (folio_test_dirty(folio)) {
 			/*
@@ -3413,6 +3427,7 @@ static struct lruvec *get_lruvec(struct mem_cgroup *memcg, int nid)
 
 static int get_swappiness(struct lruvec *lruvec, struct scan_control *sc)
 {
+	int swappiness;
 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 
@@ -3423,7 +3438,10 @@ static int get_swappiness(struct lruvec *lruvec, struct scan_control *sc)
 		mem_cgroup_get_nr_swap_pages(memcg) <= 0)
 		return 0;
 
-	return mem_cgroup_swappiness(memcg);
+	swappiness = mem_cgroup_swappiness(memcg);
+	trace_android_vh_tune_swappiness(&swappiness);
+
+	return swappiness;
 }
 
 static int get_nr_gens(struct lruvec *lruvec, int type)
@@ -4564,6 +4582,7 @@ static void inc_max_seq(struct lruvec *lruvec, bool can_swap, bool force_scan)
 	int prev, next;
 	int type, zone;
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+
 restart:
 	spin_lock_irq(&lruvec->lru_lock);
 
@@ -4892,10 +4911,11 @@ static void lru_gen_rotate_memcg(struct lruvec *lruvec, int op)
 {
 	int seg;
 	int old, new;
+	unsigned long flags;
 	int bin = get_random_u32_below(MEMCG_NR_BINS);
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 
-	spin_lock(&pgdat->memcg_lru.lock);
+	spin_lock_irqsave(&pgdat->memcg_lru.lock, flags);
 
 	VM_WARN_ON_ONCE(hlist_nulls_unhashed(&lruvec->lrugen.list));
 
@@ -4930,7 +4950,7 @@ static void lru_gen_rotate_memcg(struct lruvec *lruvec, int op)
 	if (!pgdat->memcg_lru.nr_memcgs[old] && old == get_memcg_gen(pgdat->memcg_lru.seq))
 		WRITE_ONCE(pgdat->memcg_lru.seq, pgdat->memcg_lru.seq + 1);
 
-	spin_unlock(&pgdat->memcg_lru.lock);
+	spin_unlock_irqrestore(&pgdat->memcg_lru.lock, flags);
 }
 
 void lru_gen_online_memcg(struct mem_cgroup *memcg)
@@ -4943,7 +4963,7 @@ void lru_gen_online_memcg(struct mem_cgroup *memcg)
 		struct pglist_data *pgdat = NODE_DATA(nid);
 		struct lruvec *lruvec = get_lruvec(memcg, nid);
 
-		spin_lock(&pgdat->memcg_lru.lock);
+		spin_lock_irq(&pgdat->memcg_lru.lock);
 
 		VM_WARN_ON_ONCE(!hlist_nulls_unhashed(&lruvec->lrugen.list));
 
@@ -4954,7 +4974,7 @@ void lru_gen_online_memcg(struct mem_cgroup *memcg)
 
 		lruvec->lrugen.gen = gen;
 
-		spin_unlock(&pgdat->memcg_lru.lock);
+		spin_unlock_irq(&pgdat->memcg_lru.lock);
 	}
 }
 
@@ -4978,19 +4998,20 @@ void lru_gen_release_memcg(struct mem_cgroup *memcg)
 		struct pglist_data *pgdat = NODE_DATA(nid);
 		struct lruvec *lruvec = get_lruvec(memcg, nid);
 
-		spin_lock(&pgdat->memcg_lru.lock);
+		spin_lock_irq(&pgdat->memcg_lru.lock);
 
-		VM_WARN_ON_ONCE(hlist_nulls_unhashed(&lruvec->lrugen.list));
+		if (hlist_nulls_unhashed(&lruvec->lrugen.list))
+			goto unlock;
 
 		gen = lruvec->lrugen.gen;
 
-		hlist_nulls_del_rcu(&lruvec->lrugen.list);
+		hlist_nulls_del_init_rcu(&lruvec->lrugen.list);
 		pgdat->memcg_lru.nr_memcgs[gen]--;
 
 		if (!pgdat->memcg_lru.nr_memcgs[gen] && gen == get_memcg_gen(pgdat->memcg_lru.seq))
 			WRITE_ONCE(pgdat->memcg_lru.seq, pgdat->memcg_lru.seq + 1);
-
-		spin_unlock(&pgdat->memcg_lru.lock);
+unlock:
+		spin_unlock_irq(&pgdat->memcg_lru.lock);
 	}
 }
 
@@ -5067,6 +5088,13 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 
 	/* ineligible */
 	if (zone > sc->reclaim_idx || skip_cma(folio, sc)) {
+		gen = folio_inc_gen(lruvec, folio, false);
+		list_move_tail(&folio->lru, &lrugen->folios[gen][type][zone]);
+		return true;
+	}
+
+	/* ineligible */
+	if (zone > sc->reclaim_idx) {
 		gen = folio_inc_gen(lruvec, folio, false);
 		list_move_tail(&folio->lru, &lrugen->folios[gen][type][zone]);
 		return true;
@@ -5471,11 +5499,51 @@ static unsigned long get_nr_to_reclaim(struct scan_control *sc)
 	return max(sc->nr_to_reclaim, compact_gap(sc->order));
 }
 
+static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
+{
+	unsigned long nr_to_reclaim = get_nr_to_reclaim(sc);
+	bool check_wmarks = false;
+	int i;
+
+	if (sc->nr_reclaimed >= nr_to_reclaim)
+		return true;
+
+	trace_android_vh_scan_abort_check_wmarks(&check_wmarks);
+
+	if (!check_wmarks)
+		return false;
+
+	if (!current_is_kswapd())
+		return false;
+
+	for (i = 0; i <= sc->reclaim_idx; i++) {
+		unsigned long wmark;
+		struct zone *zone = lruvec_pgdat(lruvec)->node_zones + i;
+
+		if (!managed_zone(zone))
+			continue;
+
+		if (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING)
+			wmark = wmark_pages(zone, WMARK_PROMO);
+		else
+			wmark = high_wmark_pages(zone);
+
+		/*
+		 * Abort scan once the target number of order zero pages are met.
+		 * Reclaim MIN_LRU_BATCH << 2 to facilitate immediate kswapd sleep.
+		 */
+		wmark += MIN_LRU_BATCH << 2;
+		if (!zone_watermark_ok_safe(zone, 0, wmark, sc->reclaim_idx))
+			return false;
+	}
+
+	return true;
+}
+
 static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 {
 	long nr_to_scan;
 	unsigned long scanned = 0;
-	unsigned long nr_to_reclaim = get_nr_to_reclaim(sc);
 	int swappiness = get_swappiness(lruvec, sc);
 
 	/* clean file folios are more likely to exist */
@@ -5497,7 +5565,7 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 		if (scanned >= nr_to_scan)
 			break;
 
-		if (sc->nr_reclaimed >= nr_to_reclaim)
+		if (should_abort_scan(lruvec, sc))
 			break;
 
 		cond_resched();
@@ -5556,10 +5624,9 @@ static void shrink_many(struct pglist_data *pgdat, struct scan_control *sc)
 	int bin;
 	int first_bin;
 	struct lruvec *lruvec;
-	struct lru_gen_folio *lrugen;
+	struct lru_gen_folio *lrugen = NULL;
 	struct mem_cgroup *memcg;
 	const struct hlist_nulls_node *pos;
-	unsigned long nr_to_reclaim = get_nr_to_reclaim(sc);
 
 	bin = first_bin = get_random_u32_below(MEMCG_NR_BINS);
 restart:
@@ -5570,8 +5637,10 @@ restart:
 	rcu_read_lock();
 
 	hlist_nulls_for_each_entry_rcu(lrugen, pos, &pgdat->memcg_lru.fifo[gen][bin], list) {
-		if (op)
+		if (op) {
 			lru_gen_rotate_memcg(lruvec, op);
+			op = 0;
+		}
 
 		mem_cgroup_put(memcg);
 
@@ -5579,7 +5648,7 @@ restart:
 		memcg = lruvec_memcg(lruvec);
 
 		if (!mem_cgroup_tryget(memcg)) {
-			op = 0;
+			lru_gen_release_memcg(memcg);
 			memcg = NULL;
 			continue;
 		}
@@ -5590,7 +5659,7 @@ restart:
 
 		rcu_read_lock();
 
-		if (sc->nr_reclaimed >= nr_to_reclaim)
+		if (should_abort_scan(lruvec, sc))
 			break;
 	}
 
@@ -5601,7 +5670,7 @@ restart:
 
 	mem_cgroup_put(memcg);
 
-	if (sc->nr_reclaimed >= nr_to_reclaim)
+	if (lruvec && should_abort_scan(lruvec, sc))
 		return;
 
 	/* restart if raced with lru_gen_rotate_memcg() */
@@ -8342,6 +8411,8 @@ kswapd_try_sleep:
 						alloc_order);
 		reclaim_order = balance_pgdat(pgdat, alloc_order,
 						highest_zoneidx);
+		trace_android_vh_vmscan_kswapd_done(pgdat->node_id, highest_zoneidx,
+			       			alloc_order, reclaim_order);
 		if (reclaim_order < alloc_order)
 			goto kswapd_try_sleep;
 	}

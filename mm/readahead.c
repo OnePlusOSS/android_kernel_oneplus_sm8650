@@ -594,6 +594,7 @@ static void ondemand_readahead(struct readahead_control *ractl,
 #ifdef CONFIG_OPLUS_DYNAMIC_READAHEAD
 	max_pages = adjust_readahead(ra, max_pages);
 #endif
+	trace_android_vh_ra_tuning_max_page(ractl, &max_pages);
 
 	/*
 	 * start of file
