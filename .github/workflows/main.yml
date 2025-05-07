@@ -154,14 +154,54 @@ jobs:
           sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl
           sed -i 's|echo "\$res"|echo "'"$(echo "${{ env.KERNEL_NAME }}" | sed 's/[\&/]/\\&/g')"'"|g' ./common/scripts/setlocalversion
            
-      - name: 构建内核
-        working-directory: ${{ env.WORKSPACE_DIR }}
-        run: |
-          if [[ "${{ env.CPU }}" == "sm8650" || "${{ env.CPU }}" == "sm8750" ]]; then
-            ./kernel_platform/build_with_bazel.py -t ${{ env.CPUD }} gki --action_env=KSU_VERSION 
-          else
-            LTO=thin ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ env.CPUD }} gki
-          fi
+- name: 构建内核
+  working-directory: ${{ env.WORKSPACE_DIR }}
+  env:
+    LTO: "none"                     # 禁用LTO优化
+    KSU_VERSION: "v0.9.2"           # 显式指定KernelSU版本
+    MAKEFLAGS: "-j2"                # 限制并行任务数
+    CLANG_PATH: "/usr/lib/llvm-15"  # 明确指定Clang路径
+  timeout-minutes: 45               # 单步超时设置
+  run: |
+    # 添加编译缓存清理
+    find ./out -name "*.o" -delete 2>/dev/null || true
+    
+    # 优化Bazel构建参数
+    if [[ "${{ env.CPU }}" == "sm8650" || "${{ env.CPU }}" == "sm8750" ]]; then
+      ./kernel_platform/build_with_bazel.py -t ${{ env.CPUD }} gki \
+        --action_env=KSU_VERSION \
+        --config=local \
+        --disk_cache=./.bazel_disk_cache \
+        --jobs=2 \
+        --copt=-Wno-error
+    else
+      # 使用Clang替代GCC
+      export PATH=$CLANG_PATH/bin:$PATH
+      export CC=clang
+      export CLANG_TRIPLE=aarch64-linux-gnu-
+      
+      ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ env.CPUD }} gki \
+        LLVM=1 \
+        LLVM_IAS=1 \
+        CC=clang \
+        LD=ld.lld \
+        AR=llvm-ar \
+        NM=llvm-nm \
+        STRIP=llvm-strip \
+        OBJCOPY=llvm-objcopy \
+        OBJDUMP=llvm-objdump \
+        READELF=llvm-readelf \
+        HOSTCC=clang \
+        HOSTCXX=clang++ \
+        HOSTAR=llvm-ar \
+        HOSTLD=ld.lld
+    fi
+
+    # 验证产物生成
+    if [ ! -f "./out/msm-kernel-${{ env.CPUD }}-gki/dist/Image" ]; then
+      echo "::error::内核镜像未生成，编译失败！"
+      exit 1
+    fi
       - name: 克隆 AnyKernel3
         run: |
           git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1
