@@ -65,7 +65,7 @@ jobs:
       - name: 初始化版本库并同步
         working-directory: ${{ env.WORKSPACE_DIR }}
         run: |
-          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b oneplus/${{ env.CPU }} -m ${{ env.FEIL }}.xml --depth=1
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b oneplus/${{ env.CPU }} -m oneplus_pad2_v.xml --depth=1
           repo sync
           find kernel_platform -name "abi_gki_protected_exports_*" -delete || echo "No protected exports found!"
           for script_path in kernel_platform/common/scripts/setlocalversion kernel_platform/msm-kernel/scripts/setlocalversion kernel_platform/external/dtc/scripts/setlocalversion; do
