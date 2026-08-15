@@ -1311,7 +1311,7 @@ void do_user_addr_fault(struct pt_regs *regs,
 
 	if (!(flags & FAULT_FLAG_USER))
 		goto lock_mmap;
-
+retry_vma:
 	vma = lock_vma_under_rcu(mm, address);
 	if (!vma)
 		goto lock_mmap;
@@ -1340,6 +1340,9 @@ void do_user_addr_fault(struct pt_regs *regs,
 						 ARCH_DEFAULT_PKEY);
 		return;
 	}
+	/* If the first try is only about waiting for the I/O to complete */
+	if (fault & VM_FAULT_RETRY_VMA)
+		goto retry_vma;
 lock_mmap:
 
 retry:

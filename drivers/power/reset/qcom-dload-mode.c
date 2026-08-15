@@ -244,9 +244,48 @@ static ssize_t dload_mode_store(struct kobject *kobj,
 }
 static struct reset_attribute attr_dload_mode = __ATTR_RW(dload_mode);
 
+/* ---- update_arb sysfs attribute ---- */
+static ssize_t update_arb_show(struct kobject *kobj,
+			       struct attribute *this,
+			       char *buf)
+{
+	pr_debug("update_arb: show invoked");
+	return scnprintf(buf, PAGE_SIZE, "0");
+}
+
+static ssize_t update_arb_store(struct kobject *kobj,
+			        struct attribute *this,
+			        const char *buf, size_t count)
+{
+	bool trigger;
+	int ret;
+
+	ret = kstrtobool(buf, &trigger);
+	if (ret < 0) {
+		pr_err("update_arb: kstrtobool failed rc=%d", ret);
+		return ret;
+	}
+
+	if (!trigger) {
+		pr_info("update_arb: trigger is false, no-op");
+		return count;
+	}
+
+	ret = qcom_scm_update_rollback_version();
+	if (ret < 0) {
+		pr_err("update_arb: SCM call TZ_UPDATE_ROLLBACK_VERSION_ID failed rc=%d", ret);
+		return ret;
+	}
+	return count;
+}
+
+static struct reset_attribute attr_update_arb = __ATTR_RW(update_arb);
+
+
 static struct attribute *qcom_dload_attrs[] = {
 	&attr_emmc_dload.attr,
 	&attr_dload_mode.attr,
+	&attr_update_arb.attr,
 	NULL
 };
 static struct attribute_group qcom_dload_attr_group = {

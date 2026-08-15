@@ -405,6 +405,7 @@ static inline vm_fault_t do_exception(struct pt_regs *regs, int access)
 		flags |= FAULT_FLAG_WRITE;
 	if (!(flags & FAULT_FLAG_USER))
 		goto lock_mmap;
+retry_vma:
 	vma = lock_vma_under_rcu(mm, address);
 	if (!vma)
 		goto lock_mmap;
@@ -428,6 +429,9 @@ static inline vm_fault_t do_exception(struct pt_regs *regs, int access)
 		fault = VM_FAULT_SIGNAL;
 		goto out;
 	}
+	/* If the first try is only about waiting for the I/O to complete */
+	if (fault & VM_FAULT_RETRY_VMA)
+		goto retry_vma;
 lock_mmap:
 	mmap_read_lock(mm);
 
