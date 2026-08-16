@@ -400,3 +400,15 @@
   __traceiter_android_vh_init_adjust_zone_wmark
   __tracepoint_android_vh_init_adjust_zone_wmark
   schedtune_task_boost
+  __traceiter_android_vh_resched_curr_lazy
+  __traceiter_android_vh_restore_curr_resched
+  __traceiter_android_vh_clear_curr_lazy
+  __tracepoint_android_vh_resched_curr_lazy
+  __tracepoint_android_vh_restore_curr_resched
+  __tracepoint_android_vh_clear_curr_lazy
+  __traceiter_android_vh_lock_delay_schedule
+  __traceiter_android_vh_lock_task_fork
+  __traceiter_android_vh_lock_task_exit
+  __tracepoint_android_vh_lock_delay_schedule
+  __tracepoint_android_vh_lock_task_fork
+  __tracepoint_android_vh_lock_task_exit
