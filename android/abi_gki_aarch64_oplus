@@ -412,3 +412,4 @@
   __tracepoint_android_vh_lock_delay_schedule
   __tracepoint_android_vh_lock_task_fork
   __tracepoint_android_vh_lock_task_exit
+  finish_rcuwait
