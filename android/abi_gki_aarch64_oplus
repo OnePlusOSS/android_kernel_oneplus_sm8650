@@ -11,6 +11,10 @@
   blk_start_plug
   cgroup_add_dfl_cftypes
   cgroup_add_legacy_cftypes
+  cpu_cgrp_subsys
+  css_task_iter_end
+  css_task_iter_next
+  css_task_iter_start
   console_printk
   cpufreq_frequency_table_get_index
   cpufreq_policy_transition_delay_us
@@ -176,6 +180,8 @@
   __traceiter_android_vh_binder_wait_for_work
   __traceiter_android_vh_binder_detect_low_async_space
   __traceiter_android_vh_cgroup_set_task
+  __traceiter_android_vh_sched_move_task
+  __traceiter_android_vh_reweight_entity
   __traceiter_android_vh_check_folio_look_around_ref
   __traceiter_android_vh_dup_task_struct
   __traceiter_android_vh_exit_signal
@@ -280,6 +286,8 @@
   __tracepoint_android_vh_binder_wait_for_work
   __tracepoint_android_vh_binder_detect_low_async_space
   __tracepoint_android_vh_cgroup_set_task
+  __tracepoint_android_vh_sched_move_task
+  __tracepoint_android_vh_reweight_entity
   __tracepoint_android_vh_check_folio_look_around_ref
   __tracepoint_android_vh_do_futex
   __tracepoint_android_vh_dup_task_struct
@@ -411,5 +419,4 @@
   __traceiter_android_vh_lock_task_exit
   __tracepoint_android_vh_lock_delay_schedule
   __tracepoint_android_vh_lock_task_fork
-  __tracepoint_android_vh_lock_task_exit
-  finish_rcuwait
+  __tracepoint_android_vh_lock_task_exit  finish_rcuwait

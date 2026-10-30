@@ -18,6 +18,39 @@
 #include <linux/dma-mapping.h>
 #include <linux/soc/qcom/mdt_loader.h>
 
+static bool mdt_header_valid(const struct firmware *fw)
+{
+	const struct elf32_hdr *ehdr;
+	size_t phend;
+	size_t shend;
+
+	if (fw->size < sizeof(*ehdr))
+		return false;
+
+	ehdr = (struct elf32_hdr *)fw->data;
+
+	if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG))
+		return false;
+
+	if (ehdr->e_phentsize != sizeof(struct elf32_phdr))
+		return false;
+
+	phend = size_add(size_mul(sizeof(struct elf32_phdr), ehdr->e_phnum), ehdr->e_phoff);
+	if (phend > fw->size)
+		return false;
+
+	if (ehdr->e_shentsize || ehdr->e_shnum) {
+		if (ehdr->e_shentsize != sizeof(struct elf32_shdr))
+			return false;
+
+		shend = size_add(size_mul(sizeof(struct elf32_shdr), ehdr->e_shnum), ehdr->e_shoff);
+		if (shend > fw->size)
+			return false;
+	}
+
+	return true;
+}
+
 static bool mdt_phdr_valid(const struct elf32_phdr *phdr)
 {
 	if (phdr->p_type != PT_LOAD)
@@ -66,6 +99,9 @@ ssize_t qcom_mdt_get_size(const struct firmware *fw)
 	phys_addr_t min_addr = PHYS_ADDR_MAX;
 	phys_addr_t max_addr = 0;
 	int i;
+
+	if (!mdt_header_valid(fw))
+		return -EINVAL;
 
 	ehdr = (struct elf32_hdr *)fw->data;
 	phdrs = (struct elf32_phdr *)(ehdr + 1);
@@ -125,6 +161,9 @@ void *qcom_mdt_read_metadata(struct device *dev, const struct firmware *fw, cons
 		dev_err(dev, "Image is too small\n");
 		return ERR_PTR(-EINVAL);
 	}
+
+	if (!mdt_header_valid(fw))
+		return ERR_PTR(-EINVAL);
 
 	ehdr = (struct elf32_hdr *)fw->data;
 	phdrs = (struct elf32_phdr *)(ehdr + 1);
@@ -241,6 +280,9 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw, const 
 	if (!fw || !mem_region || !mem_phys || !mem_size)
 		return -EINVAL;
 
+	if (!mdt_header_valid(fw))
+		return -EINVAL;
+
 	is_split = qcom_mdt_bins_are_split(fw);
 	ehdr = (struct elf32_hdr *)fw->data;
 	phdrs = (struct elf32_phdr *)(ehdr + 1);
@@ -341,6 +383,12 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw, const 
 		if (phdr->p_filesz) {
 			if (!is_split) {
 				/* Firmware is large enough to be non-split */
+				if (phdr->p_offset + phdr->p_filesz > fw->size) {
+					dev_err(dev, "file %s segment %d would be truncated\n",
+						fw_name, i);
+					ret = -EINVAL;
+					break;
+				}
 				memcpy(ptr, fw->data + phdr->p_offset, phdr->p_filesz);
 			} else {
 				/* Firmware not large enough, load split-out segments */

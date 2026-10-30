@@ -217,7 +217,9 @@ enum aw_led_poweron_stage {
 #define LED_SHORT_DET_TYPE	"short"
 #define LED_DET_PASS		"pass"
 #define LED_DET_FAILED		"failed"
+#ifndef MIN
 #define MIN(x, y) ((x < y) ? x : y)
+#endif
 
 #define timeval_to_ns(time) (time.tv_sec * 1000000000 + time.tv_nsec)
 

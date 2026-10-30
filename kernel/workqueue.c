@@ -1985,6 +1985,9 @@ static struct worker *create_worker(struct worker_pool *pool)
 #else /* CONFIG_OPLUS_FEATURE_BTUART_UX || CONFIG_BLOCKIO_UX_OPT */
 	set_user_nice(worker->task, pool->attrs->nice);
 #endif /* CONFIG_OPLUS_FEATURE_BTUART_UX || CONFIG_BLOCKIO_UX_OPT */
+
+	/* The hook is placed here because it needs to use the nice value */
+	trace_android_rvh_create_worker(worker->task, pool->attrs);
 	kthread_bind_mask(worker->task, pool->attrs->cpumask);
 
 	/* successful, attach the worker to the pool */
